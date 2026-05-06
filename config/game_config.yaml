@@ -1,0 +1,7 @@
+game:
+  num_players: 4
+  roles:
+    werewolf: 1
+    villager: 1
+    seer: 1
+    witch: 1
