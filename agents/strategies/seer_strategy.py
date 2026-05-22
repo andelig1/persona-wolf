@@ -22,13 +22,23 @@ class SeerStrategy:
 
     def suggest_night_action(self, memory, alive_players: list,
                              kwargs: dict = None) -> Optional[Dict]:
-        """夜晚查验：优先查最可疑的未查验玩家"""
+        """夜晚查验：第一晚随机选择，之后优先查最可疑的未查验玩家"""
+        kwargs = kwargs or {}
+        day = kwargs.get("day", 1)
+        
         candidates = [p for p in alive_players
                       if p != memory.agent_id and p not in memory.role_knowledge]
         if not candidates:
             return None
-        suspicion = memory.get_suspicion_levels()
-        target = max(candidates, key=lambda p: suspicion.get(p, 0))
+        
+        # 第一晚：随机选择查验目标
+        if day == 1:
+            target = random.choice(candidates)
+        # 非第一晚：优先查嫌疑度最高的
+        else:
+            suspicion = memory.get_suspicion_levels()
+            target = max(candidates, key=lambda p: suspicion.get(p, 0))
+        
         return {"type": "check", "target": target}
 
     def generate_speech(self, memory, game_state: dict, personality: str) -> str:

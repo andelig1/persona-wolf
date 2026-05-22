@@ -37,27 +37,22 @@ def setup_api_key():
 
 def choose_num_players():
     """选择玩家数量"""
-    print("\n请选择玩家人数（4-10人）：")
+    print("\n请选择玩家人数（6-10人）：")
 
     while True:
         choice = input("请输入数字: ").strip()
         try:
             num = int(choice)
-            if 4 <= num <= 10:
+            if 6 <= num <= 10:
                 return num
-            print("无效选择，人数必须在 4-10 之间")
+            print("无效选择，人数必须在 6-10 之间")
         except:
             print("请输入数字")
 
 
 def get_role_config(num_players: int) -> list:
     """根据人数获取角色配置"""
-    # 基础配置
-    if num_players == 4:
-        return ["狼人", "预言家", "女巫", "村民"]
-    elif num_players == 5:
-        return ["狼人", "狼人", "预言家", "女巫", "村民"]
-    elif num_players == 6:
+    if num_players == 6:
         return ["狼人", "狼人", "预言家", "女巫", "村民", "村民"]
     elif num_players == 7:
         return ["狼人", "狼人", "预言家", "女巫", "村民", "村民", "村民"]
@@ -68,15 +63,8 @@ def get_role_config(num_players: int) -> list:
     elif num_players == 10:
         return ["狼人", "狼人", "狼人", "预言家", "女巫", "女巫", "村民", "村民", "村民", "村民"]
     else:
-        # 动态计算
-        roles = ["狼人", "预言家", "女巫"]
-        villagers = num_players - 3
-        wolves = min(3, num_players // 4)
-        witches = 1 if num_players >= 5 else 0
-
-        roles = ["狼人"] * wolves + ["预言家"] + (["女巫"] if witches else [])
-        roles += ["村民"] * (num_players - len(roles))
-        return roles
+        # 默认返回6人配置
+        return ["狼人", "狼人", "预言家", "女巫", "村民", "村民"]
 
 
 def choose_or_random_role(roles: list):
@@ -151,7 +139,7 @@ def main():
 
     # 选择玩家数量
     num_players = choose_num_players()
-    human_player_id = 0  # 始终是玩家0
+    human_player_id = 1  # 始终是玩家1（从1开始计数）
 
     print("\n开始游戏 ({0}人局)...".format(num_players))
 
@@ -174,23 +162,26 @@ def main():
 
         # 游戏结束
         print("\n" + "=" * 50)
-        print("[WINNER] 游戏结束！{0}获胜！".format(winner))
+        print(f"🏆 [WINNER] 游戏结束！{winner}获胜！")
         print("=" * 50)
 
         # 显示存活玩家状态
-        print("\n最终存活：")
+        print("\n👥 最终存活：")
         for pid in eng.alive_players:
             role = eng.role_manager.get_player_role(pid)
             name = eng.role_manager.player_names.get(pid, f"玩家{pid}")
-            print("  {0}: {1}".format(name, role))
+            # 人类玩家显示为"玩家X（你）"
+            display_name = f"玩家{pid}（你）" if pid == eng.human_player_id else name
+            print(f"   ├─ {display_name}: {role}")
 
-        # 显示狼人身份（如果好人获胜）
-        if winner == "好人":
-            print("\n狼人身份：")
-            for pid, role in eng.role_manager.player_roles.items():
-                if role == "狼人":
-                    name = eng.role_manager.player_names.get(pid, f"玩家{pid}")
-                    print("  {0}: 狼人".format(name))
+        # 显示所有玩家身份
+        print("\n🃏 所有玩家身份：")
+        for pid in sorted(eng.role_manager.player_roles.keys()):
+            role = eng.role_manager.get_player_role(pid)
+            name = eng.role_manager.player_names.get(pid, f"玩家{pid}")
+            # 人类玩家显示为"玩家X（你）"
+            display_name = f"玩家{pid}（你）" if pid == eng.human_player_id else name
+            print(f"   ├─ {display_name}: {role}")
 
     except KeyboardInterrupt:
         print("\n\n游戏被用户中断")

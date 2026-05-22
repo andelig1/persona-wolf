@@ -11,11 +11,11 @@ class RoleManager:
 
     # 角色人数映射（根据总人数动态调整）
     ROLE_SCALES = {
-        4: ["狼人", "预言家", "女巫", "村民"],
-        5: ["狼人", "狼人", "预言家", "女巫", "村民"],
         6: ["狼人", "狼人", "预言家", "女巫", "村民", "村民"],
         7: ["狼人", "狼人", "预言家", "女巫", "村民", "村民", "村民"],
         8: ["狼人", "狼人", "预言家", "女巫", "女巫", "村民", "村民", "村民"],
+        9: ["狼人", "狼人", "狼人", "预言家", "女巫", "村民", "村民", "村民", "村民"],
+        10: ["狼人", "狼人", "狼人", "预言家", "女巫", "女巫", "村民", "村民", "村民", "村民"],
     }
 
     def __init__(self):
@@ -42,11 +42,11 @@ class RoleManager:
         # 打乱角色顺序
         random.shuffle(roles)
 
-        # 分配给玩家
-        self.player_roles = {i: roles[i] for i in range(num_players)}
+        # 分配给玩家（从1开始编号）
+        self.player_roles = {i + 1: roles[i] for i in range(num_players)}
 
-        # 设置玩家名称
-        self.player_names = {i: f"玩家{i}" for i in range(num_players)}
+        # 设置玩家名称（从1开始编号）
+        self.player_names = {i + 1: f"玩家{i + 1}" for i in range(num_players)}
         self.player_names[human_player_id] = "你"
 
         # 构建角色->玩家映射
@@ -54,7 +54,7 @@ class RoleManager:
 
         return self.player_roles
 
-    def assign_roles_with_human_choice(self, num_players: int, human_player_id: int = 0, human_role: str = None) -> Dict[int, str]:
+    def assign_roles_with_human_choice(self, num_players: int, human_player_id: int = 1, human_role: str = None) -> Dict[int, str]:
         """分配角色（人类玩家可选身份）
 
         Args:
@@ -67,25 +67,48 @@ class RoleManager:
         """
         # 获取角色配置
         if num_players in self.ROLE_SCALES:
-            roles = self.ROLE_SCALES[num_players].copy()
+            base_roles = self.ROLE_SCALES[num_players].copy()
         else:
-            roles = self._generate_roles(num_players)
+            base_roles = self._generate_roles(num_players)
 
         # 如果玩家选择了身份，确保该身份在列表中
-        if human_role and human_role in roles:
-            roles.remove(human_role)
-            random.shuffle(roles)
-            # 人类玩家固定是0号
-            final_roles = [human_role] + roles
+        if human_role and human_role in base_roles:
+            base_roles.remove(human_role)
+            random.shuffle(base_roles)
+            # 人类玩家固定是1号
+            final_roles = [human_role] + base_roles
         else:
-            random.shuffle(roles)
-            final_roles = roles
+            # 随机分配：确保每个角色类型概率均等
+            role_counts = {}
+            for r in base_roles:
+                role_counts[r] = role_counts.get(r, 0) + 1
+            
+            unique_roles = list(role_counts.keys())
+            min_count_per_role = 1
+            fixed_count = len(unique_roles) * min_count_per_role
+            
+            if num_players >= fixed_count:
+                # 每个角色类型先分配1个
+                equal分配 = []
+                for r in unique_roles:
+                    equal分配.append(r)
+                
+                # 剩余名额从所有角色中随机补充
+                remaining_slots = num_players - fixed_count
+                extra_roles = random.sample(base_roles, min(remaining_slots, len(base_roles)))
+                
+                # 合并并打乱
+                final_roles = equal分配 + extra_roles
+                random.shuffle(final_roles)
+            else:
+                # 人数不足，只保留部分角色
+                final_roles = random.sample(unique_roles, num_players)
 
-        # 分配给玩家
-        self.player_roles = {i: final_roles[i] for i in range(num_players)}
+        # 分配给玩家（从1开始编号）
+        self.player_roles = {i + 1: final_roles[i] for i in range(num_players)}
 
-        # 设置玩家名称
-        self.player_names = {i: f"玩家{i}" for i in range(num_players)}
+        # 设置玩家名称（从1开始编号）
+        self.player_names = {i + 1: f"玩家{i + 1}" for i in range(num_players)}
         self.player_names[human_player_id] = "你"
 
         # 构建角色->玩家映射
