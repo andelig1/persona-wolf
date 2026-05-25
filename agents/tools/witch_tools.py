@@ -26,12 +26,12 @@ def create_witch_tools(memory, game_state_provider, inference_engine) -> List[St
             return "今晚没有人被袭击。"
         suspicion = memory.get_suspicion_levels()
         sus = suspicion.get(killed, 0)
-        if sus > 0.3:
-            return f"被杀的是{killed}号，嫌疑度较高({sus:.1f})，可能不值得救。"
-        elif sus < -0.3:
-            return f"被杀的是{killed}号，嫌疑度很低({sus:.1f})，很可能是重要好人，值得救！"
+        if sus > 35:
+            return f"被杀的是{killed}号玩家，怀疑占比较高({sus:.0f}%)，可能不值得救。"
+        elif sus < 15:
+            return f"被杀的是{killed}号玩家，怀疑占比很低({sus:.0f}%)，很可能是重要好人，值得救！"
         else:
-            return f"被杀的是{killed}号，嫌疑度中性({sus:.1f})，自己判断。"
+            return f"被杀的是{killed}号玩家，怀疑占比中性({sus:.0f}%)，自己判断。"
 
     analyze_save_decision = StructuredTool.from_function(
         func=_analyze_save_decision,
@@ -50,7 +50,7 @@ def create_witch_tools(memory, game_state_provider, inference_engine) -> List[St
         lines = []
         for pid in sorted_targets[:3]:
             sus = suspicion.get(pid, 0)
-            lines.append(f"{pid}号 (嫌疑度: {sus:.1f})")
+            lines.append(f"{pid}号玩家 (怀疑占比 {sus:.0f}%)")
         return "毒杀目标建议（按嫌疑度排序）:\n" + "\n".join(lines)
 
     analyze_poison_target = StructuredTool.from_function(

@@ -13,6 +13,7 @@ from agents.react_agent import ReActWerewolfAgent
 from agents.human_agent import HumanAgent
 from agents.base_agent import BaseAgent
 from memory.event_recorder import EventRecorder
+from utils.logger import reset_logger
 
 
 class GameEngine:
@@ -54,6 +55,7 @@ class GameEngine:
 
     def _init_agents_and_state(self):
         """初始化Agent和游戏状态"""
+        reset_logger()  # 新游戏 => 新日志文件
         self._create_agents()
         self.alive_players = list(range(1, self.num_players + 1))  # 玩家编号从1开始
         self.phase_controller.start_game()
@@ -465,7 +467,8 @@ class GameEngine:
             "content": content
         }
 
-        memory_content = f"第{self.phase_controller.day}天玩家{pid}: {content}"
+        # 人类发言加 [真人] 标记，防止 AI 过度解读
+        memory_content = f"第{self.phase_controller.day}天{pid}号玩家[真人]: {content}"
         self._distribute_info_to_memories(
             "speak", memory_content,
             target=pid, visibility="public",
@@ -533,7 +536,7 @@ class GameEngine:
                 display_name = f"玩家{pid}（你）" if isinstance(agent, HumanAgent) else name
                 print(f"\n[{display_name}] {content}")
 
-                memory_content = f"第{self.phase_controller.day}天玩家{pid}: {content}"
+                memory_content = f"第{self.phase_controller.day}天{pid}号玩家: {content}"
                 self._distribute_info_to_memories(
                     "speak", memory_content,
                     target=pid, visibility="public",
@@ -613,12 +616,16 @@ class GameEngine:
                         print(f"   └─ ⚠️ 平票重投，仅可投票给: {tie_candidates}")
                     while True:
                         try:
-                            target = int(input("   选择投票目标: "))
+                            raw = input("   选择投票目标 (输入数字投票，输入0或回车弃权): ")
+                            if raw.strip() in ("", "0", "弃权", "skip", "pass"):
+                                target = None
+                                break
+                            target = int(raw)
                             if target in valid_targets and target != self.human_player_id:
                                 break
                             print("   ❌ 无效选择")
                         except ValueError:
-                            print("   ❌ 请输入数字")
+                            print("   ❌ 请输入数字或输入0弃权")
             else:
                 wolf_teammates = []
                 if role == "狼人":
@@ -636,7 +643,7 @@ class GameEngine:
             if target is not None and target in valid_targets and target != pid:
                 votes[target] = votes.get(target, 0) + 1
                 vote_details[pid] = target
-                
+
                 # 显示投票（人类玩家显示为"玩家X（你）"）
                 if isinstance(agent, HumanAgent):
                     display_name = f"玩家{pid}（你）"
@@ -644,11 +651,24 @@ class GameEngine:
                     display_name = name
                 print(f"   ✓ [{display_name}] 投票给了 {target} 号")
 
-                # 分发投票信息（使用玩家编号存储，便于AI识别）
-                memory_name = f"玩家{pid}"
+                # 分发投票信息
                 self._distribute_info_to_memories(
-                    "vote", f"{memory_name}投票给{target}号",
+                    "vote", f"{pid}号玩家投票给{target}号玩家",
                     target=target, visibility="public",
+                    player_id=pid,
+                    day=self.phase_controller.day,
+                )
+            else:
+                # 弃权
+                if isinstance(agent, HumanAgent):
+                    display_name = f"玩家{pid}（你）"
+                else:
+                    display_name = name
+                print(f"   ○ [{display_name}] 弃权")
+
+                self._distribute_info_to_memories(
+                    "vote", f"{pid}号玩家弃权",
+                    visibility="public",
                     player_id=pid,
                     day=self.phase_controller.day,
                 )
@@ -658,11 +678,27 @@ class GameEngine:
         tie_count = 0
         max_tie_rounds = 3  # 最多平票3轮
 
+        # 全员弃权 → 直接跳过
+        if not votes:
+            print(f"\n🫱 本轮无人投票，直接跳过投票阶段")
+            self._distribute_info_to_memories(
+                "system", "本轮无人投票，跳过投票阶段",
+                visibility="public",
+                day=self.phase_controller.day,
+            )
+
         while tie_count < max_tie_rounds and eliminated is None:
             if votes:
                 max_votes = max(votes.values())
                 candidates = [p for p, v in votes.items() if v == max_votes]
                 print(f"\n📊 投票结果: {votes}")
+
+                # 参与投票人数 < 存活人数/3 → 不触发淘汰
+                voters_count = len(vote_details)
+                threshold = len(self.alive_players) // 3
+                if voters_count < threshold:
+                    print(f"   ⊘ 仅{voters_count}人投票（需≥{threshold}人），不触发淘汰")
+                    break
 
                 if len(candidates) == 1:
                     eliminated = candidates[0]
@@ -711,25 +747,33 @@ class GameEngine:
                             # 如果不是平票候选人，只能投其他人
                             if pid in candidates:
                                 valid_vote = [c for c in candidates if c != self.human_player_id or c == pid]
-                                prompt = f"   选择投票目标 (可选: {valid_vote}): "
+                                prompt = f"   选择投票目标 (可选: {valid_vote}, 0=弃权): "
                                 while True:
                                     try:
-                                        target = int(input(prompt))
+                                        raw = input(prompt)
+                                        if raw.strip() in ("", "0", "弃权", "skip", "pass"):
+                                            target = None
+                                            break
+                                        target = int(raw)
                                         if target in candidates and (target != self.human_player_id or pid in candidates):
                                             break
                                         print("   ❌ 无效选择")
                                     except ValueError:
-                                        print("   ❌ 请输入数字")
+                                        print("   ❌ 请输入数字或0弃权")
                             else:
                                 # 非平票候选人只能投平票候选人（不包括自己）
                                 while True:
                                     try:
-                                        target = int(input("   选择投票目标: "))
+                                        raw = input("   选择投票目标 (0=弃权): ")
+                                        if raw.strip() in ("", "0", "弃权", "skip", "pass"):
+                                            target = None
+                                            break
+                                        target = int(raw)
                                         if target in candidates and target != self.human_player_id:
                                             break
                                         print("   ❌ 无效选择，只能投票给平票候选人")
                                     except ValueError:
-                                        print("   ❌ 请输入数字")
+                                        print("   ❌ 请输入数字或0弃权")
                         else:
                             # AI玩家投票
                             wolf_teammates = []
@@ -753,13 +797,21 @@ class GameEngine:
                             print(f"   ✓ [{display_name}] 投票给了 {target} 号")
                             
                             # 分发投票信息
-                            memory_name = f"玩家{pid}"
                             self._distribute_info_to_memories(
-                                "vote", f"{memory_name}投票给{target}号",
+                                "vote", f"{pid}号玩家投票给{target}号玩家",
                                 target=target, visibility="public",
                                 player_id=pid,
                                 day=self.phase_controller.day,
                             )
+
+        # 平票三轮未决 → 无人出局
+        if eliminated is None and tie_count >= 3:
+            print(f"\n⚖️ 平票三轮未决，无人被投票出局")
+            self._distribute_info_to_memories(
+                "system", "平票三轮未决，无人被投票出局",
+                visibility="public",
+                day=self.phase_controller.day,
+            )
 
         # 检查胜负
         winner = self.rule_checker.check_win_condition(self.alive_players)
@@ -817,7 +869,7 @@ class GameEngine:
                     content = f"我不是狼人！大家相信我！"
 
             print(f"[{name}] {content}")
-            memory_content = f"玩家{pid}(PK发言): {content}"
+            memory_content = f"{pid}号玩家(PK发言): {content}"
             self._distribute_info_to_memories(
                 "speak", memory_content,
                 target=pid, visibility="public",
@@ -907,7 +959,7 @@ class GameEngine:
                     content = f"我觉得{', '.join([str(c) + '号' for c in candidates])}里面有问题。"
 
             print(f"[{name}] {content}")
-            memory_content = f"玩家{pid}(评论): {content}"
+            memory_content = f"{pid}号玩家(评论): {content}"
             self._distribute_info_to_memories(
                 "speak", memory_content,
                 target=pid, visibility="public",

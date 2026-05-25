@@ -24,14 +24,14 @@ class VillagerStrategy:
         """回退发言"""
         fallbacks = {
             "rational": "大家理性分析一下，别乱投。",
-            "aggressive": "谁在划水？站出来说清楚！",
-            "hesitant": "我...也不太确定谁可疑...",
-            "follower": "前面说的有道理，我也这么想。",
+            "agitative": "谁在划水？站出来说清楚！",
+            "conservative": "我...也不太确定谁可疑...",
+            "impulsive": "前面说的有道理，我也这么想。",
             "slacker": "嗯...都行吧...",
         }
         return fallbacks.get(personality, "听听大家怎么说。")
 
     def get_role_guidance(self) -> str:
-        return ("你是普通村民，没有特殊技能。"
-                "通过发言和投票找出狼人，注意分析每个人的逻辑漏洞。"
-                "你的投票很关键，不要浪费。")
+        return ("你的真实身份是普通村民，没有特殊能力。"
+                "你只能靠听发言、看投票记录来找出狼人。"
+                "你的每一票都很重要——别随便跟风投。")

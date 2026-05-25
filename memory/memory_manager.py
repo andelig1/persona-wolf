@@ -1,9 +1,11 @@
 """每个Agent拥有的记忆系统
 
-存储游戏事件、嫌疑度、角色知识，供工具在ReAct推理中查询
+存储游戏事件、嫌疑度、角色知识、策略笔记、玩家信念，供工具在ReAct推理中查询
 """
 from typing import List, Dict, Optional
 from dataclasses import dataclass, field
+
+from .agent_memory import StrategicMemory, BeliefTracker
 
 
 @dataclass
@@ -27,6 +29,8 @@ class AgentMemory:
         self.events: List[MemoryEntry] = []
         self.suspicion_levels: Dict[int, float] = {}   # player_id -> [-1.0, 1.0]
         self.role_knowledge: Dict[int, str] = {}        # player_id -> known_role (预言家查验)
+        self.strategic_memory = StrategicMemory()        # 策略笔记
+        self.belief_tracker = BeliefTracker()            # 结构化玩家信念
         self._counter = 0
 
     def add_memory(self, event_type: str, content: str, metadata: dict = None) -> None:
@@ -68,21 +72,32 @@ class AgentMemory:
         return "\n".join(lines)
 
     def get_suspicion_levels(self) -> Dict[int, float]:
-        return self.suspicion_levels.copy()
+        """获取归一化后的嫌疑百分比（总和≈100%）
+
+        外部工具看到的是百分比，内部 update_suspicion 仍用原始分数计算。
+        """
+        return self._compute_suspicion_percentages()
 
     def update_suspicion(self, player_id: int, delta: float, reason: str = "") -> None:
-        """调整嫌疑度，夹到 [-1.0, 1.0]"""
+        """调整嫌疑度，夹到 [-1.0, 1.0]，同步更新信念追踪"""
         current = self.suspicion_levels.get(player_id, 0.0)
         new_val = max(-1.0, min(1.0, current + delta))
         self.suspicion_levels[player_id] = new_val
+        # 同步到信念追踪
+        if reason:
+            self.belief_tracker.update_belief(player_id, suspicion_delta=delta, reason=reason)
+        else:
+            self.belief_tracker.update_belief(player_id, suspicion_delta=delta)
 
     def set_role_knowledge(self, player_id: int, role: str) -> None:
         """记录已知角色（如预言家查验结果）"""
         self.role_knowledge[player_id] = role
         if role == "狼人":
             self.update_suspicion(player_id, 0.8, "查验确认是狼人")
+            self.belief_tracker.update_belief(player_id, suspected_role=role, reason="查验确认", confidence=1.0)
         else:
             self.update_suspicion(player_id, -0.5, "查验确认是好人")
+            self.belief_tracker.update_belief(player_id, suspected_role=role, reason="查验确认", confidence=1.0)
 
     def format_for_prompt(self, day: int = None, limit: int = None) -> str:
         """格式化为可注入prompt的文本 - 包含完整的游戏历史"""
@@ -129,7 +144,9 @@ class AgentMemory:
             if group["speeches"]:
                 lines.append("\n【白天发言】")
                 for e in group["speeches"]:
-                    lines.append(f"  {e.content}")
+                    r = e.metadata.get("round_num", "")
+                    ts = f"第{r}轮 " if r else ""
+                    lines.append(f"  [{ts}{e.content}]")
             
             # 投票记录
             if group["votes"]:
@@ -143,28 +160,50 @@ class AgentMemory:
                 for e in group["deaths"]:
                     lines.append(f"  {e.content}")
         
+        lines.append("\n--- 以上是精确的游戏记录。引用时请如实复述，不要自行补充或编造细节。 ---")
         return "\n".join(lines)
 
-    def format_suspicion_report(self) -> str:
-        """格式化嫌疑度报告"""
+    def _compute_suspicion_percentages(self, alive_players: list = None) -> Dict[int, float]:
+        """将原始嫌疑度 [-1,1] 转为百分比（总和=100%，仅存活玩家）
+
+        核心思想：怀疑是相对的——对某人的怀疑增加，其他人的比例自动降低。
+        """
+        if not self.suspicion_levels:
+            return {}
+        # 只计算存活玩家
+        weights = {}
+        for pid, score in self.suspicion_levels.items():
+            if alive_players is not None and pid not in alive_players:
+                continue
+            weights[pid] = max(0.01, score + 1.0)
+        if not weights:
+            return {}
+        total = sum(weights.values())
+        return {pid: round(w / total * 100, 1) for pid, w in weights.items()}
+
+    def format_suspicion_report(self, alive_players: list = None) -> str:
+        """格式化嫌疑度报告（百分比模式，仅存活玩家）"""
         if not self.suspicion_levels:
             return "暂无嫌疑判断。"
+        percentages = self._compute_suspicion_percentages(alive_players)
+        if not percentages:
+            return "暂无存活玩家的嫌疑判断。"
         lines = []
-        for pid, sus in sorted(self.suspicion_levels.items(), key=lambda x: -x[1]):
-            if sus > 0.5:
+        for pid, pct in sorted(percentages.items(), key=lambda x: -x[1]):
+            if pct > 35:
                 label = "高度可疑"
-            elif sus > 0.2:
+            elif pct > 25:
                 label = "有些可疑"
-            elif sus > -0.2:
+            elif pct > 15:
                 label = "不太确定"
             else:
                 label = "比较可信"
-            lines.append(f"  {pid}号: {label}({sus:.1f})")
+            lines.append(f"  {pid}号玩家: {label} (怀疑占比 {pct}%)")
         return "\n".join(lines)
 
     def _auto_update_suspicion(self, event_type: str, content: str, metadata: dict) -> None:
         """基于事件类型的启发式嫌疑度更新
-        
+
         核心原则：
         1. 发言内容分析是主要依据（权重最高）
         2. 投票行为是辅助依据（权重次之）

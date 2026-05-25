@@ -11,7 +11,7 @@ def create_seer_tools(memory, game_state_provider, inference_engine) -> List[Str
             return "你还没有查验过任何人。"
         lines = []
         for pid, role in memory.role_knowledge.items():
-            lines.append(f"{pid}号: {role}")
+            lines.append(f"{pid}号玩家: {role}")
         return "你的查验记录:\n" + "\n".join(lines)
 
     review_investigation_results = StructuredTool.from_function(
@@ -32,7 +32,7 @@ def create_seer_tools(memory, game_state_provider, inference_engine) -> List[Str
         lines = []
         for pid in sorted_targets:
             sus = suspicion.get(pid, 0)
-            lines.append(f"{pid}号 (嫌疑度: {sus:.1f})")
+            lines.append(f"{pid}号玩家 (怀疑占比 {sus:.0f}%)")
         return "查验目标建议（按嫌疑度排序）:\n" + "\n".join(lines)
 
     decide_who_to_check = StructuredTool.from_function(

@@ -10,44 +10,29 @@ class RuleChecker:
         self.role_manager = role_manager
 
     def check_win_condition(self, alive_players: List[int]) -> Optional[str]:
-        """检查胜负条件（屠边局规则）
+        """检查胜负条件
 
-        屠边局规则：
-        - 狼人胜利：村民全部淘汰 或 神职（预言家+女巫）全部淘汰
-        - 好人胜利：狼人全部淘汰
-
-        Args:
-            alive_players: 存活玩家ID列表
-
-        Returns:
-            Optional[str]: '好人' / '狼人' / None（游戏继续）
+        好人胜利：狼人全部淘汰
+        狼人胜利：
+          - 狼人数 > 好人数 → 狼赢
+          - 狼人数 = 好人数，且好人中无神职（全是村民）→ 狼赢
+          - 狼人数 = 好人数，且好人中有神职 → 继续
         """
-        # 统计各阵营人数
         wolf_count = self.role_manager.get_wolf_count(alive_players)
-        
-        # 统计存活的神职（预言家+女巫）和村民
-        seer_count = 0
-        witch_count = 0
-        villager_count = 0
-        
-        for pid in alive_players:
-            role = self.role_manager.get_player_role(pid)
-            if role == "预言家":
-                seer_count += 1
-            elif role == "女巫":
-                witch_count += 1
-            elif role == "村民":
-                villager_count += 1
-        
-        # 好人胜利：狼人全部死亡
+        good_count = len(alive_players) - wolf_count
+
         if wolf_count == 0:
             return "好人"
-        
-        # 狼人胜利：村民全部淘汰 或 神职全部淘汰
-        if villager_count == 0 or (seer_count == 0 and witch_count == 0):
+
+        if wolf_count > good_count:
             return "狼人"
 
-        # 游戏继续
+        if wolf_count == good_count:
+            has_seer = any(self.role_manager.get_player_role(p) == "预言家" for p in alive_players)
+            has_witch = any(self.role_manager.get_player_role(p) == "女巫" for p in alive_players)
+            if not has_seer and not has_witch:
+                return "狼人"  # 全是村民，无翻盘能力
+
         return None
 
     def can_eliminate(self, target: int, alive_players: List[int]) -> bool:
