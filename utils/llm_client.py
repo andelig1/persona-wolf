@@ -81,6 +81,8 @@ class DeepSeekClient:
             api_key=api_key,
             base_url=LLMConfig.DEEPSEEK_API_BASE,
             temperature=GameConfig.LLM_TEMPERATURE,
+            timeout=60,  # 设置超时时间为60秒
+            max_retries=3,  # 设置最大重试次数
         )
 
     @property

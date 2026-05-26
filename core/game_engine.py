@@ -21,7 +21,7 @@ class GameEngine:
 
     def __init__(self, num_players: int = 4, human_player_id: int = 1):
         self.num_players = num_players
-        self.human_player_id = 1
+        self.human_player_id = human_player_id
 
         # 核心组件
         self.role_manager = RoleManager()
@@ -290,6 +290,7 @@ class GameEngine:
         if witches:
             witch_agent = self.agents[witches[0]]
             saved_this_night = False
+            poisoned = None
             
             if isinstance(witch_agent, HumanAgent):
                 save_status = "有" if self.witch_has_save else "无"
@@ -313,22 +314,31 @@ class GameEngine:
                         print("\n   ⚠️ 解药已使用，无法救人")
                 
                 if not saved_this_night and self.witch_has_poison:
-                    choice = human_actions.get("witch_poison")
-                    if choice is None:
-                        choice = input("\n   请问你是否需要使用毒药？(y/n): ").lower()
-                    if choice == 'y':
-                        while True:
-                            try:
-                                poison_choice = int(input("   请选择毒杀目标: "))
-                                if poison_choice in self.alive_players:
-                                    break
-                                print("   无效选择")
-                            except ValueError:
-                                print("   请输入数字")
-                        if poison_choice and poison_choice in self.alive_players:
-                            poisoned = poison_choice
+                    # 从API参数获取毒药选择（API模式）或等待控制台输入（CLI模式）
+                    poison_target = human_actions.get("witch_poison")
+                    if poison_target is not None and poison_target != 'n' and poison_target != 'no':
+                        # API模式：直接使用传入的目标
+                        if isinstance(poison_target, int) and poison_target in self.alive_players:
+                            poisoned = poison_target
                             self.witch_has_poison = False
                             print(f"\n   ✓ 女巫使用毒药，毒杀了 {poisoned} 号玩家")
+                        elif isinstance(poison_target, str):
+                            # 字符串 'y' 表示使用毒药但未指定目标，等待输入
+                            while True:
+                                try:
+                                    poison_choice = int(input("   请选择毒杀目标: "))
+                                    if poison_choice in self.alive_players:
+                                        break
+                                    print("   无效选择")
+                                except ValueError:
+                                    print("   请输入数字")
+                            if poison_choice and poison_choice in self.alive_players:
+                                poisoned = poison_choice
+                                self.witch_has_poison = False
+                                print(f"\n   ✓ 女巫使用毒药，毒杀了 {poisoned} 号玩家")
+                    elif poison_target is None:
+                        # API模式下，None表示不操作，跳过
+                        print("\n   女巫选择不使用毒药")
                 
                 if not saved_this_night and not poisoned:
                     if not self.witch_has_save and not self.witch_has_poison:
@@ -416,10 +426,13 @@ class GameEngine:
         - 当晚无人死亡则从玩家1开始发言
         """
         alive = sorted(self.alive_players)
+        print(f"[发言顺序调试] 存活玩家: {alive}")
+        print(f"[发言顺序调试] 昨晚死亡玩家: {self.last_night_dead}")
         
         if self.last_night_dead:
             # 选择位置最靠前的死亡玩家
             first_dead = min(self.last_night_dead)
+            print(f"[发言顺序调试] 第一个死亡玩家: {first_dead}")
             # 找到该玩家后面的位置开始发言
             start_idx = None
             for i, pid in enumerate(alive):
@@ -436,8 +449,10 @@ class GameEngine:
             else:
                 start_idx = 0
 
+        print(f"[发言顺序调试] 开始索引: {start_idx}")
         # 生成发言顺序（从start_idx开始，循环整个存活列表）
         order = alive[start_idx:] + alive[:start_idx]
+        print(f"[发言顺序调试] 最终发言顺序: {order}")
         return order
 
     def _handle_human_speech(self, pid: int, round_num: int = 1,
@@ -459,7 +474,14 @@ class GameEngine:
         # 人类玩家显示为"玩家X（你）"
         display_name = f"玩家{pid}（你）" if isinstance(agent, HumanAgent) else name
         print(f"\n[{display_name}] 你是 {role}")
-        content = input("请输入发言: ")
+        
+        # 优先使用预先设置的发言内容（来自前端API），否则等待控制台输入
+        if hasattr(self, 'human_speech') and self.human_speech:
+            content = self.human_speech
+            # 消费后清空，避免重复使用
+            self.human_speech = None
+        else:
+            content = input("请输入发言: ")
 
         speech_info = {
             "player_id": pid,

@@ -71,7 +71,8 @@ class ReActWerewolfAgent(BaseAgent):
 - 投票：实际投票人数<存活人数/3时跳过；否则最高票者淘汰并公布身份
 - 夜晚死亡不公布身份，白天投票出局公布身份
 - 平票→PK发言→重投，三轮平票无人出局；可弃权
-- 发言顺序：从死者下家开始，无人死亡从1号开始"""
+- 发言顺序：从死者下家开始，无人死亡从1号开始
+- 平安夜：指夜晚没有人死亡的情况（通常是女巫使用了解药救人）"""
 
     def _get_current_goals(self) -> str:
         """从策略记忆中提取当前目标"""
@@ -202,9 +203,20 @@ class ReActWerewolfAgent(BaseAgent):
     def _generate_clean_speech(self, task_description: str, internal_monologue: str,
                                 game_state: dict, kwargs: dict) -> str:
         """阶段2 — 直接 LLM 调用，生成纯发言（无工具、无 ReAct）"""
-        from utils.llm_client import get_llm_client
-        client = get_llm_client()
-        llm = client.llm
+        print(f"[_generate_clean_speech调试] 开始生成发言...")
+        
+        try:
+            from utils.llm_client import get_llm_client
+            print(f"[_generate_clean_speech调试] 正在获取LLM客户端...")
+            client = get_llm_client()
+            print(f"[_generate_clean_speech调试] LLM客户端获取成功")
+            llm = client.llm
+            print(f"[_generate_clean_speech调试] LLM实例获取成功")
+        except Exception as e:
+            print(f"[_generate_clean_speech调试] 获取LLM客户端失败: {type(e).__name__}: {e}")
+            import traceback
+            print(f"[_generate_clean_speech调试] 异常堆栈: {traceback.format_exc()}")
+            return ""
 
         personality_prompt = get_personality_prompt(self.personality, self.id)
         role_guidance = self.strategy.get_role_guidance()
@@ -230,15 +242,25 @@ class ReActWerewolfAgent(BaseAgent):
 发言自然一点，控制在200字以内。"""
 
         user = task_description + "\n\n直接说出你的发言："
+        print(f"[_generate_clean_speech调试] system长度: {len(system)}, user长度: {len(user)}")
 
         try:
+            print(f"[_generate_clean_speech调试] 正在调用llm.invoke()...")
             response = llm.invoke([
                 SystemMessage(content=system),
                 HumanMessage(content=user),
             ])
+            print(f"[_generate_clean_speech调试] llm.invoke()调用成功")
             text = response.content.strip() if response.content else ""
-            return self._clean_speech_output(text)
+            print(f"[_generate_clean_speech调试] LLM返回原始内容: '{text}'")
+            
+            cleaned = self._clean_speech_output(text)
+            print(f"[_generate_clean_speech调试] 清理后内容: '{cleaned}'")
+            return cleaned
         except Exception as e:
+            print(f"[_generate_clean_speech调试] llm.invoke()调用失败: {type(e).__name__}: {e}")
+            import traceback
+            print(f"[_generate_clean_speech调试] 异常堆栈: {traceback.format_exc()}")
             get_logger().error(f"_generate_clean_speech: {type(e).__name__}: {e}",
                                agent_id=self.id, agent_role=self.role)
             return ""
@@ -292,26 +314,48 @@ class ReActWerewolfAgent(BaseAgent):
         if phase2_user_message is None:
             phase2_user_message = task_description
         try:
+            print(f"[_invoke_speak_agent调试] 开始调用...")
+            
             if self._speak_agent is None:
+                print(f"[_invoke_speak_agent调试] _speak_agent为空，开始构建...")
                 self._build_speak_agent()
+                print(f"[_invoke_speak_agent调试] _speak_agent构建完成")
+            else:
+                print(f"[_invoke_speak_agent调试] _speak_agent已存在")
 
             # === 阶段1: ReAct Agent 推理 + 工具调用 ===
             logger = get_logger()
             logger.phase("阶段1: ReAct推理开始", agent_id=self.id,
                          agent_role=self.role, action="speak")
-            result = self._speak_agent.invoke({
-                "messages": [HumanMessage(content=task_description)]
-            })
+            
+            print(f"[_invoke_speak_agent调试] 阶段1: 开始调用_react_agent.invoke()...")
+            try:
+                result = self._speak_agent.invoke({
+                    "messages": [HumanMessage(content=task_description)]
+                })
+                print(f"[_invoke_speak_agent调试] 阶段1: _react_agent.invoke()调用成功")
+            except Exception as e:
+                print(f"[_invoke_speak_agent调试] 阶段1: _react_agent.invoke()调用失败: {type(e).__name__}: {e}")
+                import traceback
+                print(f"[_invoke_speak_agent调试] 阶段1: 异常堆栈: {traceback.format_exc()}")
+                raise  # 重新抛出异常
+            
             messages = result.get("messages", [])
+            print(f"[_invoke_speak_agent调试] 阶段1: 返回消息数量: {len(messages)}")
             self._log_tool_calls(messages, "speak")
 
             # === 阶段2: 提取内部独白，直接 LLM 生成发言 ===
+            print(f"[_invoke_speak_agent调试] 阶段2: 开始提取内部独白...")
             logger.phase("阶段2: 生成发言", agent_id=self.id,
                          agent_role=self.role, action="speak")
             internal_monologue = self._extract_internal_monologue(messages)
+            print(f"[_invoke_speak_agent调试] 阶段2: 内部独白: '{internal_monologue}'")
+            
+            print(f"[_invoke_speak_agent调试] 阶段2: 开始调用_generate_clean_speech...")
             speech = self._generate_clean_speech(
                 phase2_user_message, internal_monologue, game_state, kwargs
             )
+            print(f"[_invoke_speak_agent调试] 阶段2: _generate_clean_speech返回: '{speech}'")
 
             if speech:
                 logger.speak_result(speech, agent_id=self.id,
@@ -325,6 +369,9 @@ class ReActWerewolfAgent(BaseAgent):
                             return cleaned
                 return ""
         except Exception as e:
+            print(f"[_invoke_speak_agent调试] 抛出异常: {type(e).__name__}: {e}")
+            import traceback
+            print(f"[_invoke_speak_agent调试] 异常堆栈: {traceback.format_exc()}")
             get_logger().error(f"_invoke_speak_agent: {type(e).__name__}: {e}",
                                agent_id=self.id, agent_role=self.role)
             return ""
@@ -403,15 +450,26 @@ class ReActWerewolfAgent(BaseAgent):
 {day_guidance}"""
 
         try:
+            print(f"[speak调试] {self.id}号玩家开始发言...")
+            print(f"[speak调试] phase1_task长度: {len(phase1_task)}")
+            print(f"[speak调试] phase2_user_message长度: {len(phase2_user_message)}")
+            
             response = self._invoke_speak_agent(
                 phase1_task, game_state, kwargs, phase2_user_message
             )
+            
+            print(f"[speak调试] _invoke_speak_agent返回: '{response}'")
+            
             if not response:
+                print(f"[speak调试] 返回空，回退到策略发言")
                 get_logger().error("speak: 返回空，回退到策略发言",
                                    agent_id=self.id, agent_role=self.role)
                 return self.strategy.generate_speech(self.memory, game_state, self.personality)
             return response
         except Exception as e:
+            print(f"[speak调试] 抛出异常: {type(e).__name__}: {e}")
+            import traceback
+            print(f"[speak调试] 异常堆栈: {traceback.format_exc()}")
             get_logger().error(f"speak: {type(e).__name__}: {e}",
                                agent_id=self.id, agent_role=self.role)
             return self.strategy.generate_speech(self.memory, game_state, self.personality)

@@ -23,6 +23,7 @@ class EventType(str, Enum):
     POISON = "poison"
     ELIMINATE = "eliminate"
     START = "start"
+    SYSTEM = "system"
 
 
 @dataclass
@@ -54,6 +55,11 @@ class GameState:
     history: List[Event] = field(default_factory=list)
     winner: Optional[str] = None
     current_player: Optional[int] = None
+    witch_has_save: bool = True
+    witch_has_poison: bool = True
+    werewolf_kill_target: Optional[int] = None
+    current_speaker: Optional[int] = None
+    speaking_order: List[int] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -66,6 +72,11 @@ class GameState:
             "history": [e.to_dict() for e in self.history],
             "winner": self.winner,
             "current_player": self.current_player,
+            "witch_has_save": self.witch_has_save,
+            "witch_has_poison": self.witch_has_poison,
+            "werewolf_kill_target": self.werewolf_kill_target,
+            "current_speaker": self.current_speaker,
+            "speaking_order": self.speaking_order,
         }
 
 
