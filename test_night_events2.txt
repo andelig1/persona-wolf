@@ -1,1 +1,0 @@
-{"type": "error", "message": "当前不是夜晚阶段"}
