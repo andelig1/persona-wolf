@@ -304,11 +304,8 @@ pip install -r requirements.txt
 # 创建 .env 文件，填入 DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxx
 # 或直接运行 main.py，按提示输入 key 自动生成 .env
 
-# 3. 运行命令行版本
-python main.py
-
-# 4. 运行测试
-python -m pytest tests/
+# 3. 运行
+python server.py
 ```
 
 ---
@@ -364,4 +361,4 @@ python -m pytest tests/
 ### 4. 不要随便提交到其他分支
 
 ### 5. 测试
-`python main.py` — 完整游戏流程
+python server.py
