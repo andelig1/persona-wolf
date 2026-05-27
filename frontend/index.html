@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>单人狼人杀 - Solo Werewolf</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div class="stars" id="stars"></div>
+
+    <div class="moon">
+        <div class="moon-crater"></div>
+        <div class="moon-crater"></div>
+        <div class="moon-crater"></div>
+    </div>
+
+    <!-- ======== 开始界面 ======== -->
+    <div class="start-screen" id="start-screen">
+        <div class="start-content">
+            <div class="subtitle">Solo Werewolf Game</div>
+            <h1 class="main-title">单人狼人杀</h1>
+            <div class="tagline">Multi-Agent 人格博弈系统</div>
+            <div class="wolf-icon">🐺</div>
+
+            <div id="player-selection" style="margin: 30px 0;">
+                <div style="color: #a78bfa; font-size: 14px; margin-bottom: 15px;">👥 选择玩家人数</div>
+                <div style="display: flex; gap: 15px; justify-content: center; flex-wrap: wrap;">
+                    <button class="player-btn" onclick="selectPlayers(6)">6人局</button>
+                    <button class="player-btn" onclick="selectPlayers(7)">7人局</button>
+                    <button class="player-btn" onclick="selectPlayers(8)">8人局</button>
+                    <button class="player-btn" onclick="selectPlayers(9)">9人局</button>
+                    <button class="player-btn" onclick="selectPlayers(10)">10人局</button>
+                </div>
+                <div id="role-config-display" style="margin-top: 20px; font-size: 12px; color: #8888aa;"></div>
+            </div>
+
+            <div id="role-selection" style="margin: 30px 0; display: none;">
+                <div style="color: #a78bfa; font-size: 14px; margin-bottom: 15px;">🎭 选择你的角色</div>
+                <div id="available-roles" style="display: flex; gap: 15px; justify-content: center; flex-wrap: wrap;"></div>
+            </div>
+
+            <button class="start-btn" onclick="startGame()" id="start-btn" disabled>开始游戏</button>
+            <div class="start-info">与 AI 玩家一起体验狼人杀的魅力</div>
+        </div>
+    </div>
+
+    <!-- ======== 游戏主界面 ======== -->
+    <div class="container" id="game-container" style="display: none;">
+        <div class="header">
+            <div class="subtitle">Solo Werewolf Game</div>
+            <h1 class="main-title">单人狼人杀</h1>
+        </div>
+
+        <div class="game-wrapper">
+            <!-- 左侧面板 -->
+            <div class="left-panel">
+                <div class="status-card">
+                    <h3>📊 游戏状态</h3>
+                    <div class="day-info">第 <span id="day-num">1</span> 天</div>
+                    <div id="phase-display" class="phase-badge phase-night">🌙 夜晚</div>
+                    <div id="winner-area"></div>
+                </div>
+
+                <div class="players-section">
+                    <h3>👥 玩家列表</h3>
+                    <div class="player-list" id="player-list"></div>
+                </div>
+            </div>
+
+            <!-- 右侧主区域 -->
+            <div class="main-area">
+                <div class="speech-card" id="speech-card">
+                    <h3>💬 发言记录</h3>
+                    <div class="speech-content" id="speech-content"></div>
+                </div>
+
+                <div class="action-card" id="action-card">
+                    <h3 id="action-title">🌙 夜晚操作</h3>
+                    <div id="action-content"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ======== 游戏结束弹窗 ======== -->
+    <div class="game-over-overlay" id="game-over-overlay" style="display: none;">
+        <div class="game-over-modal">
+            <div class="game-over-title">🎉 游戏结束</div>
+            <div class="game-over-winner" id="game-over-winner">胜利者: 狼人</div>
+            <div class="game-over-role" id="game-over-role">你的身份: 狼人</div>
+            <div style="margin-top: 20px;">
+                <div style="font-size: 16px; color: #c084fc; margin-bottom: 10px;">🎭 所有玩家身份:</div>
+                <div id="game-over-roles" style="text-align: left; padding-left: 20px;"></div>
+            </div>
+            <button class="restart-btn" onclick="startGame()" style="margin-top: 30px;">再来一局</button>
+        </div>
+    </div>
+
+    <script src="js/game.js"></script>
+</body>
+</html>

@@ -12,24 +12,27 @@ class RuleChecker:
     def check_win_condition(self, alive_players: List[int]) -> Optional[str]:
         """检查胜负条件
 
-        Args:
-            alive_players: 存活玩家ID列表
-
-        Returns:
-            Optional[str]: '好人' / '狼人' / None（游戏继续）
+        好人胜利：狼人全部淘汰
+        狼人胜利：
+          - 狼人数 > 好人数 → 狼赢
+          - 狼人数 = 好人数，且好人中无神职（全是村民）→ 狼赢
+          - 狼人数 = 好人数，且好人中有神职 → 继续
         """
         wolf_count = self.role_manager.get_wolf_count(alive_players)
         good_count = len(alive_players) - wolf_count
 
-        # 狼人全部死亡 -> 好人胜利
         if wolf_count == 0:
             return "好人"
 
-        # 狼人数量 >= 好人数量 -> 狼人胜利
-        if wolf_count >= good_count:
+        if wolf_count > good_count:
             return "狼人"
 
-        # 游戏继续
+        if wolf_count == good_count:
+            has_seer = any(self.role_manager.get_player_role(p) == "预言家" for p in alive_players)
+            has_witch = any(self.role_manager.get_player_role(p) == "女巫" for p in alive_players)
+            if not has_seer and not has_witch:
+                return "狼人"  # 全是村民，无翻盘能力
+
         return None
 
     def can_eliminate(self, target: int, alive_players: List[int]) -> bool:

@@ -31,8 +31,8 @@ class InferenceEngine:
         try:
             llm = self._get_llm()
             messages = [
-                {"role": "system", "content": "你是一个狼人杀游戏分析师。分析发言者的逻辑是否合理，是否暴露了身份信息，是否在为狼人开脱。回答简短，50字以内。"},
-                {"role": "user", "content": f"{speaker_id}号玩家说：{speech}\n{context}\n请分析这段发言。"},
+                {"role": "system", "content": "你是狼人杀分析助手。只根据发言原文分析，不要推测原文没有的内容。如果发言信息量少就说'信息不足难以判断'。回答30字以内。"},
+                {"role": "user", "content": f"{speaker_id}号玩家说：{speech}\n{context}\n分析这段发言（不要编造原文没有的细节）："},
             ]
             return llm.chat(messages, temperature=0.3)
         except Exception:

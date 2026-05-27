@@ -1,25 +1,12 @@
-# Core
-langchain>=0.1.0
-langchain-core
-langchain-community
+# Web 框架
+flask>=3.0
+flask-cors>=5.0
 
-# LLM Providers
-langchain-openai
-openai>=1.0.0
+# LLM 框架
+langchain>=1.0
+langchain-openai>=1.0
+langgraph>=1.0
+langgraph-prebuilt>=1.0
 
-# Web / API
-fastapi>=0.100.0
-uvicorn[standard]>=0.23.0
-streamlit>=1.28.0
-sse-starlette>=1.8.0
-
-# Environment
-python-dotenv>=1.0.0
-
-# Utils
-pyyaml>=6.0
-python-dateutil>=2.8.0
-
-# Testing
-pytest>=7.4.0
-pytest-asyncio>=0.21.0
+# 工具
+python-dotenv>=1.0

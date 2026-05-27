@@ -17,19 +17,39 @@ from .exceptions import (
 )
 
 
-# 全局游戏存储: game_id -> (GameEngine, GameState)
+# 全局游戏存储: game_id -> (GameEngine, GameState, synced_event_count)
 _games: Dict[str, tuple] = {}
 
 
-def init_game(num_players: int = 4, human_player_id: int = 0) -> GameState:
+def get_role_config(num_players: int) -> list:
+    """根据人数获取角色配置"""
+    if num_players == 6:
+        return ["狼人", "狼人", "预言家", "女巫", "村民", "村民"]
+    elif num_players == 7:
+        return ["狼人", "狼人", "预言家", "女巫", "村民", "村民", "村民"]
+    elif num_players == 8:
+        return ["狼人", "狼人", "预言家", "女巫", "女巫", "村民", "村民", "村民"]
+    elif num_players == 9:
+        return ["狼人", "狼人", "狼人", "预言家", "女巫", "村民", "村民", "村民", "村民"]
+    elif num_players == 10:
+        return ["狼人", "狼人", "狼人", "预言家", "女巫", "女巫", "村民", "村民", "村民", "村民"]
+    else:
+        # 默认返回6人配置
+        return ["狼人", "狼人", "预言家", "女巫", "村民", "村民"]
+
+
+def init_game(num_players: int = 4, human_player_id: int = 0, human_role: str = None) -> GameState:
     """初始化游戏"""
     game_id = str(uuid.uuid4())[:8]
 
     engine = GameEngine(num_players, human_player_id)
-    engine.initialize()
+    if human_role:
+        engine.initialize_with_roles(human_role)
+    else:
+        engine.initialize()
 
     state = _engine_to_state(game_id, engine)
-    _games[game_id] = (engine, state)
+    _games[game_id] = (engine, state, len(engine.history))
     return state
 
 
@@ -37,10 +57,121 @@ def get_game_state(game_id: str) -> GameState:
     """获取当前游戏状态"""
     if game_id not in _games:
         raise GameNotFoundError(f"游戏 {game_id} 不存在")
-    engine, state = _games[game_id]
+    engine, state, _ = _games[game_id]
     # 同步引擎状态到 API state
-    _sync_state(state, engine)
+    _sync_state(state, engine, game_id)
     return state
+
+
+def set_werewolf_target(game_id: str, target: int) -> dict:
+    """设置狼人击杀目标（用于分步执行夜晚阶段）"""
+    engine, state = _get_engine_and_state(game_id)
+
+    if state.phase == Phase.ENDED:
+        raise GameAlreadyOverError("游戏已结束")
+
+    if state.phase != Phase.NIGHT:
+        raise InvalidPhaseError("当前不是夜晚阶段")
+
+    # 直接设置狼人击杀目标
+    engine.werewolf_kill_target = target
+    
+    # 记录到记忆
+    wolves = engine.role_manager.get_alive_by_role("狼人", engine.alive_players)
+    if wolves:
+        engine._distribute_info_to_memories(
+            "kill", f"狼人选择击杀{target}号",
+            target=target, visibility="werewolf",
+            player_id=wolves[0],
+        )
+
+    _sync_state(state, engine, game_id)
+    return {"werewolf_kill_target": target}
+
+
+def execute_wolf_action(game_id: str) -> dict:
+    """让狼人AI自动执行击杀行动（当人类不是狼人时调用）"""
+    import traceback
+    
+    engine, state = _get_engine_and_state(game_id)
+
+    if state.phase == Phase.ENDED:
+        raise GameAlreadyOverError("游戏已结束")
+
+    if state.phase != Phase.NIGHT:
+        raise InvalidPhaseError("当前不是夜晚阶段")
+
+    # 检查人类玩家是否是狼人
+    human_role = engine.role_manager.get_player_role(engine.human_player_id)
+    print(f"[execute_wolf_action] 人类玩家角色: {human_role}")
+    
+    if human_role == "狼人" and engine.human_player_id in engine.alive_players:
+        raise InvalidPlayerError("人类玩家是狼人，请手动选择击杀目标")
+
+    # 获取狼人列表
+    wolves = engine.role_manager.get_alive_by_role("狼人", engine.alive_players)
+    print(f"[execute_wolf_action] 狼人列表: {wolves}")
+    
+    if not wolves:
+        return {"werewolf_kill_target": None, "message": "没有存活的狼人"}
+
+    # 获取游戏状态供AI决策
+    game_state = engine.get_game_state()
+    
+    # 让狼人AI执行行动
+    wolf_agent = engine.agents[wolves[0]]
+    print(f"[execute_wolf_action] 调用狼人AI: {wolf_agent}")
+    
+    action = None
+    try:
+        print(f"[execute_wolf_action] 开始调用 night_action...")
+        action = wolf_agent.night_action(game_state, wolf_teammates=wolves)
+        print(f"[execute_wolf_action] night_action 返回: {action}")
+    except Exception as e:
+        # LLM调用失败，使用策略回退
+        print(f"[execute_wolf_action] night_action 异常: {str(e)}")
+        traceback.print_exc()
+        print(f"[execute_wolf_action] 使用策略回退...")
+        action = wolf_agent.strategy.suggest_night_action(
+            wolf_agent.memory, 
+            game_state.get("alive_players", []),
+            {"wolf_teammates": wolves}
+        )
+        print(f"[execute_wolf_action] 策略回退返回: {action}")
+    
+    if action and action.get("type") == "kill":
+        engine.werewolf_kill_target = action.get("target")
+        print(f"[execute_wolf_action] 狼人AI选择击杀: {engine.werewolf_kill_target} 号玩家")
+        
+        # 记录到记忆
+        engine._distribute_info_to_memories(
+            "kill", f"狼人选择击杀{engine.werewolf_kill_target}号",
+            target=engine.werewolf_kill_target, visibility="werewolf",
+            player_id=wolves[0],
+        )
+    else:
+        print(f"[execute_wolf_action] 没有获取到击杀行动，使用随机选择")
+        # 如果AI没有选择目标，随机选择一个
+        alive = game_state.get("alive_players", [])
+        candidates = [p for p in alive if p not in wolves]
+        print(f"[execute_wolf_action] 可选目标: {candidates}")
+        
+        if candidates:
+            import random
+            engine.werewolf_kill_target = random.choice(candidates)
+            print(f"[execute_wolf_action] 狼人AI随机选择击杀: {engine.werewolf_kill_target} 号玩家")
+            
+            engine._distribute_info_to_memories(
+                "kill", f"狼人选择击杀{engine.werewolf_kill_target}号",
+                target=engine.werewolf_kill_target, visibility="werewolf",
+                player_id=wolves[0],
+            )
+        else:
+            engine.werewolf_kill_target = None
+            print(f"[execute_wolf_action] 没有可选目标")
+
+    _sync_state(state, engine, game_id)
+    return {"werewolf_kill_target": engine.werewolf_kill_target}
 
 
 def night_step(
@@ -63,8 +194,71 @@ def night_step(
         "witch_poison": user_witch_poison,
     }
 
-    result = engine.night_step(human_actions)
-    _sync_state(state, engine)
+    # 添加法官提示词事件
+    current_day = engine.phase_controller.day
+    state.history.append(Event(
+        type=EventType.SYSTEM,
+        player_id=-1,
+        content=f"🌙 第 {current_day} 天夜晚到来..."
+    ))
+    state.history.append(Event(
+        type=EventType.SYSTEM,
+        player_id=-1,
+        content=f"☽ 所有人请闭眼"
+    ))
+
+    # 检查是否有狼人存活
+    has_wolves = len(engine.role_manager.get_alive_by_role("狼人", engine.alive_players)) > 0
+    if has_wolves:
+        state.history.append(Event(
+            type=EventType.SYSTEM,
+            player_id=-1,
+            content=f"🐺 狼人请睁眼"
+        ))
+        state.history.append(Event(
+            type=EventType.SYSTEM,
+            player_id=-1,
+            content=f"🐺 狼人请闭眼"
+        ))
+
+    # 检查是否有预言家存活
+    has_seers = len(engine.role_manager.get_alive_by_role("预言家", engine.alive_players)) > 0
+    if has_seers:
+        state.history.append(Event(
+            type=EventType.SYSTEM,
+            player_id=-1,
+            content=f"🔮 预言家请睁眼"
+        ))
+        state.history.append(Event(
+            type=EventType.SYSTEM,
+            player_id=-1,
+            content=f"🔮 预言家请闭眼"
+        ))
+
+    # 检查是否有女巫存活
+    has_witches = len(engine.role_manager.get_alive_by_role("女巫", engine.alive_players)) > 0
+    if has_witches:
+        state.history.append(Event(
+            type=EventType.SYSTEM,
+            player_id=-1,
+            content=f"🧪 女巫请睁眼"
+        ))
+        state.history.append(Event(
+            type=EventType.SYSTEM,
+            player_id=-1,
+            content=f"🧪 女巫请闭眼"
+        ))
+
+    state.history.append(Event(
+        type=EventType.SYSTEM,
+        player_id=-1,
+        content=f"☀️ 所有人请睁眼"
+    ))
+
+    # 如果狼人目标已通过 /api/game/execute-wolf-action 预先设定（如女巫流程），
+    # 则传入 pre_set_wolf_target 避免引擎重跑狼人AI，防止两次行动冲突
+    result = engine.night_step(human_actions, pre_set_wolf_target=engine.werewolf_kill_target)
+    _sync_state(state, engine, game_id)
 
     events = [
         Event(type=EventType.KILL, player_id=-1,
@@ -85,6 +279,19 @@ def night_step(
 
     state.history.extend(events)
 
+    # 夜晚结束后检查胜负（与CLI的run()保持一致）
+    winner = engine.rule_checker.check_win_condition(engine.alive_players)
+    game_over = winner is not None
+    if game_over:
+        engine.winner = winner
+        engine.phase_controller.end_game(winner)
+        events.append(Event(
+            type=EventType.SYSTEM,
+            player_id=-1,
+            content=f"🏆 {winner} 胜利！"
+        ))
+        _sync_state(state, engine, game_id)
+
     return NightResult(
         killed=result.get('killed') if not result.get('saved') else None,
         saved=result.get('saved', False),
@@ -92,29 +299,109 @@ def night_step(
         checked=result.get('checked'),
         checked_role=result.get('checked_role'),
         events=events,
-        game_over=result.get('dead', []) and engine.is_game_over(),
+        game_over=game_over,
     )
 
 
-def day_step(game_id: str, user_speak: str) -> DayResult:
-    """执行白天阶段（发言）"""
+def night_step_stream(game_id: str,
+                      user_werewolf_target: int = None,
+                      user_seer_target: int = None,
+                      user_witch_save: bool = False,
+                      user_witch_poison: int = None):
+    """流式执行夜晚阶段 — SSE 生成器"""
     engine, state = _get_engine_and_state(game_id)
 
     if state.phase == Phase.ENDED:
         raise GameAlreadyOverError("游戏已结束")
 
-    result = engine.day_step(human_speech=user_speak)
-    _sync_state(state, engine)
+    if state.phase != Phase.NIGHT:
+        raise InvalidPhaseError("当前不是夜晚阶段")
 
+    human_actions = {
+        "werewolf_target": user_werewolf_target,
+        "seer_target": user_seer_target,
+        "witch_save_choice": 'y' if user_witch_save else 'n',
+        "witch_poison": user_witch_poison,
+    }
+
+    # 使用引擎的流式生成器
+    for evt in engine.night_step_stream(human_actions, pre_set_wolf_target=engine.werewolf_kill_target):
+        if evt["type"] == "system":
+            state.history.append(Event(
+                type=EventType.SYSTEM,
+                player_id=-1,
+                content=evt["content"],
+            ))
+        elif evt["type"] == "result":
+            state.history.append(Event(
+                type=EventType.SYSTEM,
+                player_id=-1,
+                content=evt["content"],
+            ))
+        yield evt
+
+    _sync_state(state, engine, game_id)
+
+
+def day_step(game_id: str, user_speak: str) -> DayResult:
+    """执行白天阶段（发言）- 使用engine.day_step()方法，与CLI版本保持一致"""
+    engine, state = _get_engine_and_state(game_id)
+
+    if state.phase == Phase.ENDED:
+        raise GameAlreadyOverError("游戏已结束")
+
+    if state.phase != Phase.DAY:
+        raise InvalidPhaseError("当前不是白天阶段")
+
+    # 添加天亮提示词
+    current_day = engine.phase_controller.day
+    state.history.append(Event(
+        type=EventType.SYSTEM,
+        player_id=-1,
+        content=f"☀️ 第 {current_day} 天到来..."
+    ))
+
+    # 检查昨晚是否有人死亡
+    if engine.last_night_dead and len(engine.last_night_dead) > 0:
+        dead_names = [f"{pid}号" for pid in engine.last_night_dead]
+        state.history.append(Event(
+            type=EventType.SYSTEM,
+            player_id=-1,
+            content=f"💀 昨夜，{', '.join(dead_names)}玩家死亡..."
+        ))
+    else:
+        state.history.append(Event(
+            type=EventType.SYSTEM,
+            player_id=-1,
+            content=f"🌙 昨夜是平安夜"
+        ))
+
+    # 设置人类玩家的发言内容（用于_handle_human_speech）
+    engine.human_speech = user_speak
+
+    # 调用engine的day_step方法（与CLI版本相同）
+    result = engine.day_step(round_num=1, previous_speeches=[])
+    all_speeches = result["speeches"]
+
+    # 转换为Event格式（用于返回值）
     speeches = []
-    for s in result.get("speeches", []):
+    for s in all_speeches:
         speeches.append(Event(
             type=EventType.SPEAK,
             player_id=s["player_id"],
             content=s["content"],
         ))
 
-    state.history.extend(speeches)
+    # 同步引擎事件到 state（引擎已通过 _add_event 记录发言）
+    _sync_state(state, engine, game_id)
+
+    # 进入投票阶段
+    engine.phase_controller.next_phase()
+    state.history.append(Event(
+        type=EventType.SYSTEM,
+        player_id=-1,
+        content=f"🗳️ 投票环节"
+    ))
 
     return DayResult(
         speeches=speeches,
@@ -123,15 +410,81 @@ def day_step(game_id: str, user_speak: str) -> DayResult:
     )
 
 
-def vote_step(game_id: str, user_vote: int) -> VoteResult:
-    """执行投票阶段"""
+def day_step_stream(game_id: str, user_speak: str):
+    """流式执行白天发言 — 返回生成器逐个产出发言事件（含系统消息）"""
     engine, state = _get_engine_and_state(game_id)
 
     if state.phase == Phase.ENDED:
         raise GameAlreadyOverError("游戏已结束")
 
+    if state.phase != Phase.DAY:
+        raise InvalidPhaseError("当前不是白天阶段")
+
+    # —— 天亮系统消息（立即 yield 给前端） ——
+    current_day = engine.phase_controller.day
+    day_msg = f"☀️ 第 {current_day} 天到来..."
+    state.history.append(Event(type=EventType.SYSTEM, player_id=-1, content=day_msg))
+    yield {"type": "system", "content": day_msg}
+
+    if engine.last_night_dead and len(engine.last_night_dead) > 0:
+        dead_names = [f"{pid}号" for pid in engine.last_night_dead]
+        death_msg = f"💀 昨夜，{'、'.join(dead_names)}玩家死亡"
+        state.history.append(Event(type=EventType.SYSTEM, player_id=-1, content=death_msg))
+        yield {"type": "system", "content": death_msg}
+    else:
+        peace_msg = "🌙 昨夜是平安夜"
+        state.history.append(Event(type=EventType.SYSTEM, player_id=-1, content=peace_msg))
+        yield {"type": "system", "content": peace_msg}
+
+    # 设置人类发言内容
+    engine.human_speech = user_speak
+
+    # 流式生成发言
+    for speech in engine.day_step_stream():
+        yield {
+            "type": "speech",
+            "player_id": speech["player_id"],
+            "name": speech["name"],
+            "content": speech["content"],
+            "position": speech.get("position", 0),
+            "total_speakers": speech.get("total_speakers", 0),
+        }
+
+    # 同步引擎事件到 state（必须在添加投票事件之前）
+    _sync_state(state, engine, game_id)
+
+    # 发言结束，进入投票阶段
+    engine.phase_controller.next_phase()
+    _sync_state(state, engine, game_id)
+    vote_msg = "🗳️ 投票环节"
+    state.history.append(Event(type=EventType.SYSTEM, player_id=-1, content=vote_msg))
+    yield {"type": "system", "content": vote_msg}
+
+    # 发一个完成信号
+    yield {
+        "type": "done",
+        "phase": state.phase.value,
+        "speaking_order": engine._get_speaking_order() if hasattr(engine, '_get_speaking_order') else [],
+    }
+
+
+def vote_step(game_id: str, user_vote: int) -> VoteResult:
+    """执行投票阶段"""
+    engine, state = _get_engine_and_state(game_id)
+
+    print(f"[调试] 投票前的 phase: {state.phase}")
+    
+    if state.phase == Phase.ENDED:
+        raise GameAlreadyOverError("游戏已结束")
+
     result = engine.vote_step(human_vote=user_vote)
-    _sync_state(state, engine)
+    
+    print(f"[调试] engine.vote_step 返回 result: {result}")
+    print(f"[调试] engine.phase_controller.current_phase: {engine.phase_controller.current_phase}")
+    
+    _sync_state(state, engine, game_id)
+    
+    print(f"[调试] _sync_state 后的 state.phase: {state.phase}")
 
     events = []
     votes = result.get("votes", {})
@@ -151,6 +504,28 @@ def vote_step(game_id: str, user_vote: int) -> VoteResult:
             target=result['eliminated'],
         ))
 
+    # 添加投票结果的法官提示词
+    if result.get("eliminated") is not None:
+        events.insert(0, Event(
+            type=EventType.SYSTEM,
+            player_id=-1,
+            content=f"📊 投票结果：{votes}"
+        ))
+    elif len(votes) > 0:
+        events.insert(0, Event(
+            type=EventType.SYSTEM,
+            player_id=-1,
+            content=f"⚖️ 平票！无人出局"
+        ))
+
+    # 如果游戏结束，添加游戏结束提示词
+    if result.get("game_over") and result.get("winner"):
+        events.append(Event(
+            type=EventType.SYSTEM,
+            player_id=-1,
+            content=f"🏆 {result['winner']} 胜利！"
+        ))
+
     state.history.extend(events)
 
     return VoteResult(
@@ -160,6 +535,103 @@ def vote_step(game_id: str, user_vote: int) -> VoteResult:
         events=events,
         game_over=result.get("game_over", False),
     )
+
+
+def vote_step_stream(game_id: str, user_vote: int):
+    """流式执行投票阶段 — 并行 AI 投票，实时推送进度"""
+    engine, state = _get_engine_and_state(game_id)
+
+    if state.phase == Phase.ENDED:
+        raise GameAlreadyOverError("游戏已结束")
+
+    if state.phase != Phase.VOTE:
+        raise InvalidPhaseError("当前不是投票阶段")
+
+    # 流式执行投票
+    for event in engine.vote_step_stream(human_vote=user_vote):
+        if event.get("type") == "done":
+            # 投票完成，同步状态
+            _sync_state(state, engine, game_id)
+
+            # 构建历史事件
+            events = []
+            votes = event.get("votes", {})
+            for target, count in votes.items():
+                events.append(Event(
+                    type=EventType.VOTE,
+                    player_id=-1,
+                    content=f"{target} 号获得 {count} 票",
+                    target=target,
+                ))
+
+            eliminated = event.get("eliminated")
+            if eliminated is not None:
+                events.append(Event(
+                    type=EventType.ELIMINATE,
+                    player_id=-1,
+                    content=f"{eliminated} 号被投票出局",
+                    target=eliminated,
+                ))
+
+            if eliminated is not None:
+                events.insert(0, Event(
+                    type=EventType.SYSTEM,
+                    player_id=-1,
+                    content=f"📊 投票结果：{votes}"
+                ))
+            elif len(votes) > 0:
+                events.insert(0, Event(
+                    type=EventType.SYSTEM,
+                    player_id=-1,
+                    content=f"⚖️ 平票！无人出局"
+                ))
+
+            if event.get("game_over") and event.get("winner"):
+                events.append(Event(
+                    type=EventType.SYSTEM,
+                    player_id=-1,
+                    content=f"🏆 {event['winner']} 胜利！"
+                ))
+
+            state.history.extend(events)
+
+            yield {
+                "type": "done",
+                "phase": state.phase.value,
+                "votes": votes,
+                "eliminated": eliminated,
+                "tie": eliminated is None and bool(votes),
+                "game_over": event.get("game_over", False),
+                "winner": event.get("winner"),
+            }
+        elif event.get("type") == "tie_break":
+            # 平票提示
+            yield {
+                "type": "tie_break",
+                "round": event.get("round"),
+                "candidates": event.get("candidates"),
+            }
+        elif event.get("type") == "tie_speech":
+            # PK 发言 — 记录到历史并转发
+            state.history.append(Event(
+                type=EventType.SPEAK,
+                player_id=event.get("player_id", -1),
+                content=f"[PK发言] {event.get('content', '')}",
+            ))
+            yield event
+        elif event.get("type") == "system":
+            # 系统消息 — 记录到历史
+            state.history.append(Event(
+                type=EventType.SYSTEM,
+                player_id=-1,
+                content=event.get("content", ""),
+            ))
+            yield event
+        elif event.get("type") == "vote_progress":
+            # 单票进度
+            yield event
+        else:
+            yield event
 
 
 def get_history(game_id: str) -> List[Event]:
@@ -182,7 +654,8 @@ def check_win(game_id: str) -> Optional[str]:
 def _get_engine_and_state(game_id: str) -> tuple:
     if game_id not in _games:
         raise GameNotFoundError(f"游戏 {game_id} 不存在")
-    return _games[game_id]
+    engine, state, _ = _games[game_id]
+    return (engine, state)
 
 
 def _engine_to_state(game_id: str, engine: GameEngine) -> GameState:
@@ -192,6 +665,7 @@ def _engine_to_state(game_id: str, engine: GameEngine) -> GameState:
         "waiting": Phase.WAITING, "night": Phase.NIGHT,
         "day": Phase.DAY, "vote": Phase.VOTE, "ended": Phase.ENDED,
     }
+    speaking_order = engine._get_speaking_order() if hasattr(engine, '_get_speaking_order') else []
     return GameState(
         game_id=game_id,
         day=gs["day"],
@@ -204,10 +678,14 @@ def _engine_to_state(game_id: str, engine: GameEngine) -> GameState:
                   content=f"游戏开始！共{engine.num_players}名玩家")
         ],
         current_player=engine.human_player_id,
+        witch_has_save=gs.get("witch_has_save", True),
+        witch_has_poison=gs.get("witch_has_poison", True),
+        werewolf_kill_target=gs.get("werewolf_kill_target"),
+        speaking_order=speaking_order,
     )
 
 
-def _sync_state(state: GameState, engine: GameEngine):
+def _sync_state(state: GameState, engine: GameEngine, game_id: str = None):
     """同步GameEngine状态到API GameState"""
     gs = engine.get_game_state()
     phase_map = {
@@ -221,3 +699,31 @@ def _sync_state(state: GameState, engine: GameEngine):
     state.player_names = gs["player_names"]
     if engine.winner:
         state.winner = engine.winner
+    state.witch_has_save = gs.get("witch_has_save", True)
+    state.witch_has_poison = gs.get("witch_has_poison", True)
+    state.werewolf_kill_target = gs.get("werewolf_kill_target")
+    state.speaking_order = engine._get_speaking_order() if hasattr(engine, '_get_speaking_order') else []
+
+    # 增量同步引擎 history → 只追加新事件，不覆盖已有事件
+    event_type_map = {
+        "speak": EventType.SPEAK,
+        "vote": EventType.VOTE,
+        "kill": EventType.KILL,
+        "eliminate": EventType.ELIMINATE,
+        "check": EventType.CHECK,
+        "save": EventType.SAVE,
+        "poison": EventType.POISON,
+        "system": EventType.SYSTEM,
+    }
+
+    if game_id and game_id in _games:
+        _, state_ref, synced_count = _games[game_id]
+        new_events = engine.history[synced_count:]
+        for e in new_events:
+            state.history.append(Event(
+                type=event_type_map.get(e.get("type"), EventType.SPEAK),
+                player_id=e.get("player_id", -1),
+                content=e.get("content", ""),
+                target=e.get("target")
+            ))
+        _games[game_id] = (engine, state, len(engine.history))

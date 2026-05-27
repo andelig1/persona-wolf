@@ -18,9 +18,17 @@ PERSONALITY_PROMPTS = {
 }
 
 
-def get_personality_prompt(personality: str) -> str:
-    """获取人格对应的 System Prompt"""
-    return PERSONALITY_PROMPTS.get(personality, RATIONAL_SYSTEM_PROMPT)
+def get_personality_prompt(personality: str, player_id: int = None) -> str:
+    """获取人格对应的 System Prompt，注入玩家编号"""
+    raw = PERSONALITY_PROMPTS.get(personality, RATIONAL_SYSTEM_PROMPT)
+    cleaned = raw.replace("{context}", "")
+    for suffix in ["\n\n你现在的发言：", "\n\n你的发言（简短但有基本内容）："]:
+        cleaned = cleaned.replace(suffix, "")
+    if player_id is not None:
+        cleaned = cleaned.replace("{player_id}", str(player_id))
+    else:
+        cleaned = cleaned.replace("{player_id}", "?")
+    return cleaned
 
 
 __all__ = [

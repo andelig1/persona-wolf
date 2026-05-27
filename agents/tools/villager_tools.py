@@ -16,15 +16,15 @@ def create_villager_tools(memory, game_state_provider, inference_engine) -> List
         lines = []
         for pid in sorted_players:
             sus = suspicion.get(pid, 0)
-            if sus > 0.5:
+            if sus > 35:
                 label = "高度可疑"
-            elif sus > 0.2:
+            elif sus > 20:
                 label = "有些可疑"
-            elif sus > -0.2:
+            elif sus > 10:
                 label = "不太确定"
             else:
                 label = "比较可信"
-            lines.append(f"{pid}号 ({label}, 嫌疑度: {sus:.1f})")
+            lines.append(f"{pid}号玩家 ({label}, 怀疑占比 {sus:.0f}%)")
         return "玩家可疑程度:\n" + "\n".join(lines)
 
     identify_suspicious_players = StructuredTool.from_function(

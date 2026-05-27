@@ -13,7 +13,7 @@ def create_werewolf_tools(memory, game_state_provider, inference_engine) -> List
                   and pid != memory.agent_id]
         if not wolves:
             return "你没有存活的狼人队友了，独自行动。"
-        return f"你的狼人队友是: {wolves}号。记住不要投票给队友！"
+        return f"你的狼人队友是: {', '.join([f'{w}号玩家' for w in wolves])}。记住不要投票给队友！"
 
     discuss_with_teammate = StructuredTool.from_function(
         func=_discuss_with_teammate,
@@ -30,12 +30,23 @@ def create_werewolf_tools(memory, game_state_provider, inference_engine) -> List
         candidates = [p for p in alive if p not in wolf_teammates]
         if not candidates:
             return "没有可击杀的目标。"
-        suspicion = memory.get_suspicion_levels()
+        # 只对候选人做归一化，确保百分比总和=100%
+        raw_scores = memory.get_suspicion_levels()
+        weights = {}
+        for pid in candidates:
+            score = raw_scores.get(pid, 0)
+            weights[pid] = max(0.01, score + 1.0)  # [-1,1] → [0.01,2.0]
+        total = sum(weights.values())
         lines = []
         for pid in candidates:
-            sus = suspicion.get(pid, 0)
-            tag = "对你有威胁" if sus < -0.2 else "一般目标"
-            lines.append(f"{pid}号 (嫌疑度: {sus:.1f}, {tag})")
+            pct = round(weights[pid] / total * 100, 1) if total > 0 else 0
+            if pct > 35:
+                tag = "高威胁"
+            elif pct > 20:
+                tag = "中等威胁"
+            else:
+                tag = "低威胁"
+            lines.append(f"{pid}号玩家 (怀疑占比 {pct:.0f}%, {tag})")
         return "击杀优先级:\n" + "\n".join(lines)
 
     analyze_kill_priority = StructuredTool.from_function(
