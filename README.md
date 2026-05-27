@@ -10,11 +10,13 @@
 
 | 模块 | 状态 | 说明 |
 |------|------|------|
-| `core/` | 完成 | 游戏引擎（裁判模式）、阶段控制、胜负判定 |
+| `core/` | 完成 | 游戏引擎（裁判模式 + 流式 SSE）、阶段控制、胜负判定 |
 | `agents/` | 完成 | ReActWerewolfAgent、HumanAgent、工具系统、人格系统、角色策略 |
 | `memory/` | 完成 | AgentMemory（per-agent）、策略记忆、信念追踪、InferenceEngine |
-| `utils/` | 完成 | LLM客户端（DeepSeek）、日志系统、配置管理 |
-| `api/` | 预留 | 前后端接口层（B组负责） |
+| `utils/` | 完成 | LLM客户端（DeepSeek）、日志系统、配置管理、内容过滤 |
+| `api/` | 完成 | 前后端接口层、SSE 流式推送、RESTful API |
+| `frontend/` | 完成 | Web 界面（星空主题）、SSE 实时推送、观战模式 |
+| `config/` | 完成 | 游戏配置（YAML） |
 
 ---
 
@@ -23,7 +25,7 @@
 ```
 persona-wolf/
 ├── core/                       # 游戏核心（裁判系统）
-│   ├── game_engine.py          # 主引擎（裁判模式 + 发言/投票/夜晚流程）
+│   ├── game_engine.py          # 主引擎（流式 SSE + 同步双模式、发言/投票/夜晚流程、平票 PK）
 │   ├── phase_controller.py     # 阶段切换（Night → Day → Vote → End）
 │   ├── role_manager.py         # 角色分配
 │   └── rule_checker.py         # 胜负判定
@@ -34,8 +36,8 @@ persona-wolf/
 │   ├── human_agent.py          # 人类玩家 Agent
 │   ├── tools/                  # 工具系统（ReAct 推理中调用）
 │   │   ├── __init__.py         # create_tools_for_role() 工厂
-│   │   ├── common_tools.py     # 通用工具（7个）
-│   │   ├── agent_tools.py      # Agent 主动工具（4个：策略笔记/信念更新/目标设定/回忆）
+│   │   ├── common_tools.py     # 通用工具
+│   │   ├── agent_tools.py      # Agent 主动工具（策略笔记/信念更新/目标设定/回忆）
 │   │   ├── werewolf_tools.py   # 狼人工具
 │   │   ├── seer_tools.py       # 预言家工具
 │   │   ├── witch_tools.py      # 女巫工具
@@ -60,16 +62,32 @@ persona-wolf/
 │   ├── inference_engine.py     # InferenceEngine（LLM 分析发言/投票模式）
 │   └── event_recorder.py       # EventRecorder（全局事件记录）
 
+├── api/                        # 前后端接口层
+│   ├── __init__.py             # 模块导出
+│   ├── game_api.py             # 游戏主流程 API（初始化、夜晚/白天/投票、流式 SSE）
+│   ├── models.py               # 数据结构（GameState、Event、Night/Day/VoteResult）
+│   └── exceptions.py           # 异常定义（GameNotFound、InvalidPhase 等）
+
+├── frontend/                   # Web 前端
+│   ├── index.html              # 主页面（星空主题 UI）
+│   ├── css/style.css           # 样式（夜晚主题、系统消息、观战模式）
+│   └── js/game.js              # 游戏逻辑（SSE 流读取、实时渲染、观战自动推进）
+
+├── config/                     # 配置文件
+│   ├── __init__.py
+│   └── game_config.yaml        # 游戏参数配置
+
 ├── utils/                      # 工具
 │   ├── config.py               # 配置管理
 │   ├── env_generator.py        # 自动生成 .env 文件
+│   ├── filter_utils.py         # 内容过滤（脏话词库）
 │   ├── llm_client.py           # DeepSeek LLM 客户端（LangChain ChatOpenAI）
 │   └── logger.py               # 游戏日志系统（工具调用/推理阶段/错误记录）
 
-├── logs/                       # 日志输出目录（自动创建）
-├── tests/                      # 测试
+├── server.py                   # Flask Web 服务器（SSE 端点、RESTful API）
 ├── main.py                     # CLI 游戏入口
-└── requirements.txt
+├── requirements.txt            # Python 依赖
+└── .env.example                # API Key 配置模板
 ```
 
 ---
