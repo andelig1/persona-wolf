@@ -100,12 +100,10 @@ class ReActWerewolfAgent(BaseAgent):
 3. 如有新的推理结论，用 record_strategy_note 记录
 4. 最后回复纯发言文本"""
         elif action_type == "vote":
-            return """建议步骤：
-1. 先用 recall_strategy 回忆你的策略
-2. 回顾本轮发言（review_game_history）
-3. 检查你对各玩家的信念（check_suspicion_levels）
-4. 确保投票与你的发言立场一致
-5. 回复一个玩家编号，或回复"弃权"跳过"""
+            return """建议步骤（快速投票，最多调2个工具）：
+1. 用 check_suspicion_levels 看你对各玩家的怀疑度
+2. 如果需要回顾发言，用 review_game_history 只看最近几轮
+3. 直接回复一个玩家编号，或回复"弃权"跳过"""
         else:  # night_action
             return """建议步骤：
 1. 先用 recall_strategy 回忆你的策略
@@ -567,22 +565,22 @@ class ReActWerewolfAgent(BaseAgent):
         if my_speech:
             task += """
 
-上面是你本轮说的话。想想你刚刚表态了谁可疑、谁可信，投票时自然会投那个你觉得最像狼的人。"""
+上面是你本轮说的话，投你发言时最怀疑的那个人。"""
         else:
             task += """
 
-你本轮没有发言记录，根据嫌疑判断来投票。"""
+没发言记录，根据嫌疑判断来投票。"""
 
         # 弃权提示：仅首轮投票提供，平票重投时不建议弃权
         tie_break = kwargs.get("vote_options")
         if tie_break:
             task += f"""
 
-现在是平票重投，你只能在 {tie_break} 中选择一个投票，不能投其他人。"""
+平票重投，只能在 {tie_break} 中选一个投票。"""
         else:
             task += """
 
-你可以投票，也可以选择弃权（回复"弃权"），但如果有一定的线索，请不要轻易选择弃权，投票是决定胜利的重要手段，实在没有线索时再选择弃权。"""
+线索不足时可弃权，但尽量投票。"""
 
         task += f"""
 
