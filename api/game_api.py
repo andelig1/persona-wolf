@@ -190,7 +190,7 @@ def night_step(
     human_actions = {
         "werewolf_target": user_werewolf_target,
         "seer_target": user_seer_target,
-        "witch_save_choice": 'y' if user_witch_save else 'n',
+        "witch_save_choice": ('y' if user_witch_save else 'n') if user_witch_save is not None else None,
         "witch_poison": user_witch_poison,
     }
 
@@ -307,8 +307,12 @@ def night_step_stream(game_id: str,
                       user_werewolf_target: int = None,
                       user_seer_target: int = None,
                       user_witch_save: bool = False,
-                      user_witch_poison: int = None):
-    """流式执行夜晚阶段 — SSE 生成器"""
+                      user_witch_poison: int = None,
+                      skip_intro: bool = False,
+                      resume_phase: str = None):
+    """流式执行夜晚阶段 — SSE 生成器
+    resume_phase: None=从头, "seer"=跳过狼人, "witch"=跳过狼人+预言家
+    """
     engine, state = _get_engine_and_state(game_id)
 
     if state.phase == Phase.ENDED:
@@ -320,12 +324,17 @@ def night_step_stream(game_id: str,
     human_actions = {
         "werewolf_target": user_werewolf_target,
         "seer_target": user_seer_target,
-        "witch_save_choice": 'y' if user_witch_save else 'n',
+        "witch_save_choice": ('y' if user_witch_save else 'n') if user_witch_save is not None else None,
         "witch_poison": user_witch_poison,
     }
 
+    # 第一段调用不应带入上一夜的旧击杀目标
+    pre_set = engine.werewolf_kill_target if skip_intro else None
+
     # 使用引擎的流式生成器
-    for evt in engine.night_step_stream(human_actions, pre_set_wolf_target=engine.werewolf_kill_target):
+    for evt in engine.night_step_stream(human_actions, pre_set_wolf_target=pre_set,
+                                         skip_intro=skip_intro,
+                                         resume_phase=resume_phase):
         if evt["type"] == "system":
             state.history.append(Event(
                 type=EventType.SYSTEM,
@@ -410,8 +419,11 @@ def day_step(game_id: str, user_speak: str) -> DayResult:
     )
 
 
-def day_step_stream(game_id: str, user_speak: str):
-    """流式执行白天发言 — 返回生成器逐个产出发言事件（含系统消息）"""
+def day_step_stream(game_id: str, user_speak: str = None,
+                    skip_intro: bool = False, resume_from: int = 0):
+    """流式执行白天发言 — 支持两段式：第一段无人类发言时轮到人类暂停；
+    第二段带发言 + resume_from 续播。
+    """
     engine, state = _get_engine_and_state(game_id)
 
     if state.phase == Phase.ENDED:
@@ -420,27 +432,34 @@ def day_step_stream(game_id: str, user_speak: str):
     if state.phase != Phase.DAY:
         raise InvalidPhaseError("当前不是白天阶段")
 
-    # —— 天亮系统消息（立即 yield 给前端） ——
-    current_day = engine.phase_controller.day
-    day_msg = f"☀️ 第 {current_day} 天到来..."
-    state.history.append(Event(type=EventType.SYSTEM, player_id=-1, content=day_msg))
-    yield {"type": "system", "content": day_msg}
+    # —— 天亮系统消息 ——
+    if not skip_intro:
+        current_day = engine.phase_controller.day
+        day_msg = f"☀️ 第 {current_day} 天到来..."
+        state.history.append(Event(type=EventType.SYSTEM, player_id=-1, content=day_msg))
+        yield {"type": "system", "content": day_msg}
 
-    if engine.last_night_dead and len(engine.last_night_dead) > 0:
-        dead_names = [f"{pid}号" for pid in engine.last_night_dead]
-        death_msg = f"💀 昨夜，{'、'.join(dead_names)}玩家死亡"
-        state.history.append(Event(type=EventType.SYSTEM, player_id=-1, content=death_msg))
-        yield {"type": "system", "content": death_msg}
-    else:
-        peace_msg = "🌙 昨夜是平安夜"
-        state.history.append(Event(type=EventType.SYSTEM, player_id=-1, content=peace_msg))
-        yield {"type": "system", "content": peace_msg}
-
-    # 设置人类发言内容
-    engine.human_speech = user_speak
+        if engine.last_night_dead and len(engine.last_night_dead) > 0:
+            dead_names = [f"{pid}号" for pid in engine.last_night_dead]
+            death_msg = f"💀 昨夜，{'、'.join(dead_names)}玩家死亡"
+            state.history.append(Event(type=EventType.SYSTEM, player_id=-1, content=death_msg))
+            yield {"type": "system", "content": death_msg}
+        else:
+            peace_msg = "🌙 昨夜是平安夜"
+            state.history.append(Event(type=EventType.SYSTEM, player_id=-1, content=peace_msg))
+            yield {"type": "system", "content": peace_msg}
 
     # 流式生成发言
-    for speech in engine.day_step_stream():
+    for speech in engine.day_step_stream(human_speech=user_speak, resume_from=resume_from):
+        if speech.get("awaiting_input"):
+            # 轮到人类玩家发言 → 暂停，等前端提供发言内容
+            yield {
+                "type": "awaiting_human_speech",
+                "player_id": speech["player_id"],
+                "position": speech.get("position", 0),
+                "total_speakers": speech.get("total_speakers", 0),
+            }
+            return
         yield {
             "type": "speech",
             "player_id": speech["player_id"],
@@ -450,17 +469,14 @@ def day_step_stream(game_id: str, user_speak: str):
             "total_speakers": speech.get("total_speakers", 0),
         }
 
-    # 同步引擎事件到 state（必须在添加投票事件之前）
+    # 发言全部结束（人类已发言或人类不在发言顺序中），进入投票阶段
     _sync_state(state, engine, game_id)
-
-    # 发言结束，进入投票阶段
     engine.phase_controller.next_phase()
     _sync_state(state, engine, game_id)
     vote_msg = "🗳️ 投票环节"
     state.history.append(Event(type=EventType.SYSTEM, player_id=-1, content=vote_msg))
     yield {"type": "system", "content": vote_msg}
 
-    # 发一个完成信号
     yield {
         "type": "done",
         "phase": state.phase.value,
@@ -537,7 +553,7 @@ def vote_step(game_id: str, user_vote: int) -> VoteResult:
     )
 
 
-def vote_step_stream(game_id: str, user_vote: int):
+def vote_step_stream(game_id: str, user_vote: int, extra_speeches: list = None):
     """流式执行投票阶段 — 并行 AI 投票，实时推送进度"""
     engine, state = _get_engine_and_state(game_id)
 
@@ -547,8 +563,17 @@ def vote_step_stream(game_id: str, user_vote: int):
     if state.phase != Phase.VOTE:
         raise InvalidPhaseError("当前不是投票阶段")
 
+    tie_speeches = extra_speeches or []
+    # 如果请求中包含额外的发言（来自前端在平票PK期间收集的人类发言），先记录到历史，实际输出由 engine.vote_step_stream 生成
+    for s in tie_speeches:
+        state.history.append(Event(
+            type=EventType.SPEAK,
+            player_id=s.get('player_id', -1),
+            content=s.get('content', ''),
+        ))
+
     # 流式执行投票
-    for event in engine.vote_step_stream(human_vote=user_vote):
+    for event in engine.vote_step_stream(human_vote=user_vote, tie_speeches=tie_speeches):
         if event.get("type") == "done":
             # 投票完成，同步状态
             _sync_state(state, engine, game_id)

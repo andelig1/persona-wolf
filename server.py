@@ -181,8 +181,10 @@ def api_night_step_stream():
                     game_id,
                     user_werewolf_target=data.get('user_werewolf_target'),
                     user_seer_target=data.get('user_seer_target'),
-                    user_witch_save=data.get('user_witch_save', False),
+                    user_witch_save=data.get('user_witch_save'),  # None=未提供, True/False=已选择
                     user_witch_poison=data.get('user_witch_poison'),
+                    skip_intro=data.get('skip_intro', False),
+                    resume_phase=data.get('resume_phase'),
                 ):
                     json_str = __import__('json').dumps(event, ensure_ascii=False)
                     yield f"data: {json_str}\n\n"
@@ -229,14 +231,18 @@ def api_day_step_stream():
     """流式白天发言 - SSE"""
     data = request.json
     game_id = data.get('game_id')
-    user_speak = data.get('user_speak', '')
+    user_speak = data.get('user_speak') or None
+    skip_intro = data.get('skip_intro', False)
+    resume_from = data.get('resume_from', 0)
 
     try:
-        logger.info(f"[API] 收到流式发言请求: game={game_id}, speak_len={len(user_speak)}")
+        logger.info(f"[API] 收到流式发言请求: game={game_id}, speak_len={len(user_speak or '')}")
 
         def generate():
             try:
-                for event in day_step_stream(game_id, user_speak):
+                for event in day_step_stream(game_id, user_speak,
+                                              skip_intro=skip_intro,
+                                              resume_from=resume_from):
                     json_str = __import__('json').dumps(event, ensure_ascii=False)
                     yield f"data: {json_str}\n\n"
             except GameAlreadyOverError:
@@ -289,7 +295,7 @@ def api_vote_step_stream():
 
         def generate():
             try:
-                for event in vote_step_stream(game_id, user_vote):
+                for event in vote_step_stream(game_id, user_vote, extra_speeches=data.get('extra_speeches')):
                     json_str = __import__('json').dumps(event, ensure_ascii=False)
                     yield f"data: {json_str}\n\n"
             except GameAlreadyOverError:

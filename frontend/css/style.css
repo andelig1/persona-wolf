@@ -272,6 +272,16 @@ body {
     color: #ef4444;
 }
 
+.status-voted-out {
+    background: rgba(251, 191, 36, 0.2);
+    color: #fbbf24;
+}
+
+.player-item.voted-out {
+    border-color: rgba(251, 191, 36, 0.4) !important;
+    background: rgba(251, 191, 36, 0.06);
+}
+
 .main-area {
     display: flex;
     flex-direction: column;
@@ -422,18 +432,24 @@ body {
 }
 
 .action-input {
-    padding: 14px 20px;
-    border: 1px solid rgba(139, 92, 246, 0.3);
-    border-radius: 10px;
-    background: rgba(255, 255, 255, 0.05);
-    color: #fff;
+    width: 100%;
+    padding: 16px 20px;
+    border: 1px solid rgba(139, 92, 246, 0.35);
+    border-radius: 16px;
+    background: rgba(255, 255, 255, 0.08);
+    color: #f8fafc;
     font-size: 16px;
+    line-height: 1.6;
     outline: none;
-    transition: border-color 0.3s ease;
+    transition: border-color 0.3s ease, box-shadow 0.3s ease;
+    resize: vertical;
+    min-height: 130px;
+    font-family: inherit;
 }
 
 .action-input:focus {
     border-color: #8b5cf6;
+    box-shadow: 0 0 0 4px rgba(139, 92, 246, 0.15);
 }
 
 .action-input::placeholder {
@@ -516,8 +532,8 @@ body {
 
 .vote-panel {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
-    gap: 12px;
+    grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+    gap: 14px;
     margin-top: 15px;
 }
 

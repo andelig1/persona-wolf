@@ -401,40 +401,86 @@ class GameEngine:
             "dead": dead,
         }
 
-    def night_step_stream(self, human_actions: dict = None, pre_set_wolf_target: int = None):
-        """执行夜晚阶段 — 流式生成器版本，逐个 yield 事件供 SSE 推送到前端"""
+    def night_step_stream(self, human_actions: dict = None, pre_set_wolf_target: int = None,
+                          skip_intro: bool = False, resume_phase: str = None):
+        """执行夜晚阶段 — 流式生成器版本
+        resume_phase: None=从头开始, "seer"=跳过狼人, "witch"=跳过狼人+预言家
+        每个阶段人类玩家未提供操作时暂停 yield awaiting_xxx 事件。
+        """
         day = self.phase_controller.day
         self.werewolf_kill_target = None
         self.seer_check_result = None
         game_state = self.get_game_state()
         human_actions = human_actions or {}
+        skip_wolf = resume_phase in ("seer", "witch")
+        skip_seer = resume_phase == "witch"
 
-        yield {"type": "system", "content": f"🌙 第 {day} 天夜晚到来..."}
-        yield {"type": "system", "content": "☽ 所有人请闭眼"}
+        if not skip_intro and not skip_wolf:
+            yield {"type": "system", "content": f"🌙 第 {day} 天夜晚到来..."}
+            yield {"type": "system", "content": "☽ 所有人请闭眼"}
 
         # —— 狼人阶段 ——
-        wolves = self.role_manager.get_alive_by_role("狼人", self.alive_players)
-        if wolves:
-            yield {"type": "system", "content": "🐺 狼人请睁眼"}
-            self._night_wolf_phase(game_state, human_actions, pre_set_wolf_target)
-            yield {"type": "system", "content": "🐺 狼人请闭眼"}
-        else:
-            yield {"type": "system", "content": "🐺 狼人已全部出局，无人睁眼"}
+        if not skip_wolf:
+            wolves = self.role_manager.get_alive_by_role("狼人", self.alive_players)
+            if wolves:
+                if not skip_intro:
+                    yield {"type": "system", "content": "🐺 狼人请睁眼"}
+
+                human_is_wolf = any(isinstance(self.agents[w], HumanAgent) for w in wolves)
+                if human_is_wolf and not human_actions.get("werewolf_target") and not pre_set_wolf_target:
+                    yield {"type": "awaiting_wolf_target"}
+                    return
+
+                self._night_wolf_phase(game_state, human_actions, pre_set_wolf_target)
+
+                yield {"type": "system", "content": "🐺 狼人请闭眼"}
+            else:
+                if not skip_intro:
+                    yield {"type": "system", "content": "🐺 狼人已全部出局，无人睁眼"}
 
         # —— 预言家阶段 ——
-        seers = self.role_manager.get_alive_by_role("预言家", self.alive_players)
-        if seers:
-            yield {"type": "system", "content": "🔮 预言家请睁眼"}
-            self._night_seer_phase(game_state, human_actions)
-            yield {"type": "system", "content": "🔮 预言家请闭眼"}
-        else:
-            yield {"type": "system", "content": "🔮 预言家已出局，无人睁眼"}
+        if not skip_seer:
+            seers = self.role_manager.get_alive_by_role("预言家", self.alive_players)
+            if seers:
+                # 只有完全从头开始(resume_phase=None)或skip_intro才不播"请睁眼"
+                # resume_phase='seer' 说明预言家"请睁眼"已播过→跳过
+                if resume_phase != 'seer':
+                    yield {"type": "system", "content": "🔮 预言家请睁眼"}
+
+                human_is_seer = any(isinstance(self.agents[s], HumanAgent) for s in seers)
+                if human_is_seer and not human_actions.get("seer_target"):
+                    yield {"type": "awaiting_seer_target"}
+                    return
+
+                self._night_seer_phase(game_state, human_actions)
+
+                yield {"type": "system", "content": "🔮 预言家请闭眼"}
+
+                # 查验完成后立刻推送结果
+                if self.seer_check_result:
+                    yield {"type": "seer_result",
+                           "checked": self.seer_check_result[0],
+                           "checked_role": self.seer_check_result[1]}
+            else:
+                if not skip_intro:
+                    yield {"type": "system", "content": "🔮 预言家已出局，无人睁眼"}
 
         # —— 女巫阶段 ——
         witches = self.role_manager.get_alive_by_role("女巫", self.alive_players)
         if witches:
-            yield {"type": "system", "content": "🧪 女巫请睁眼"}
+            # resume_phase='witch' 时女巫"请睁眼"已播过→跳过
+            if resume_phase != 'witch':
+                yield {"type": "system", "content": "🧪 女巫请睁眼"}
+
+            human_is_witch = any(isinstance(self.agents[w], HumanAgent) for w in witches)
+            if human_is_witch:
+                has_save_action = human_actions.get("witch_save_choice")
+                if has_save_action is None:
+                    yield {"type": "awaiting_witch_action"}
+                    return
+
             saved, poisoned = self._night_witch_phase(game_state, human_actions)
+
             yield {"type": "system", "content": "🧪 女巫请闭眼"}
         else:
             yield {"type": "system", "content": "🧪 女巫已出局，无人睁眼"}
@@ -625,10 +671,12 @@ class GameEngine:
         return {"speeches": speeches}
 
     def day_step_stream(self, human_speech: str = None, round_num: int = 1,
-                        previous_speeches: list = None):
+                        previous_speeches: list = None, resume_from: int = 0):
         """执行白天一轮发言 - 流式生成器版本
 
         逐个产出发言，不再等待全部完成。前端可以实时显示。
+        当人类玩家未提供发言时，在轮到人类时暂停并 yield awaiting_input，
+        等前端二次调用时通过 resume_from 续播。
         """
         game_state = self.get_game_state()
         previous_speeches = previous_speeches or []
@@ -639,11 +687,41 @@ class GameEngine:
 
         for idx, pid in enumerate(speaking_order):
             position = idx + 1
+
+            # 续播模式：跳过已处理过的发言位置
+            if position < resume_from:
+                continue
+            if position == resume_from and isinstance(self.agents[pid], HumanAgent):
+                # 这是人类玩家之前暂停的位置，现在有发言了
+                agent = self.agents[pid]
+                name = self.role_manager.player_names.get(pid, f"玩家{pid}")
+                if human_speech:
+                    self.human_speech = human_speech
+                speech_info = self._handle_human_speech(
+                    pid, round_num=round_num,
+                    position=position, total_speakers=total_speakers
+                )
+                content = speech_info["content"]
+                speech = {"player_id": pid, "name": name, "content": content,
+                          "position": position, "total_speakers": total_speakers}
+                speeches_so_far.append(speech)
+                yield speech
+                continue
+
             agent = self.agents[pid]
             role = self.role_manager.get_player_role(pid)
             name = self.role_manager.player_names.get(pid, f"玩家{pid}")
 
             if isinstance(agent, HumanAgent):
+                # 没有预设发言 → 暂停，等前端提供
+                if not human_speech and not getattr(self, 'human_speech', None):
+                    yield {"player_id": pid, "name": name, "content": None,
+                           "awaiting_input": True, "position": position,
+                           "total_speakers": total_speakers}
+                    return
+                # 有发言 → 正常处理
+                if human_speech:
+                    self.human_speech = human_speech
                 speech_info = self._handle_human_speech(
                     pid, round_num=round_num,
                     position=position, total_speakers=total_speakers
@@ -866,7 +944,7 @@ class GameEngine:
 
         return votes, vote_details, progress_events
 
-    def vote_step_stream(self, human_vote=_VOTE_NOT_PROVIDED, tie_candidates: list = None):
+    def vote_step_stream(self, human_vote=_VOTE_NOT_PROVIDED, tie_candidates: list = None, tie_speeches: list = None):
         """流式投票阶段 — 并行 AI 投票，实时 yield 进度事件
 
         Yields:
@@ -877,6 +955,144 @@ class GameEngine:
         print("\n" + "=" * 45)
         print(f"🗳️ [VOTE] 第 {self.phase_controller.day} 天 - 投票阶段")
         print("=" * 45)
+
+        pending = getattr(self, 'pending_tie_break', None)
+        if pending is not None:
+            candidates = pending.get('candidates', [])
+            tie_count = pending.get('round', 1)
+            final_votes = pending.get('votes', {})
+            final_vote_details = pending.get('vote_details', {})
+            self.pending_tie_break = None
+
+            human_speech_map = {}
+            if tie_speeches:
+                for s in tie_speeches:
+                    pid = s.get('player_id')
+                    if pid in candidates and s.get('content'):
+                        human_speech_map[pid] = s.get('content')
+
+            _, pk_speeches = self._tie_break_speech(candidates, human_speeches=human_speech_map)
+            for s in pk_speeches:
+                yield {"type": "tie_speech", "player_id": s["player_id"],
+                       "name": s["name"], "content": s["content"], "is_pk": True}
+            other_speeches = self._tie_break_others_speech(candidates, allow_human_speech=False)
+            for s in other_speeches:
+                yield {"type": "tie_speech", "player_id": s["player_id"],
+                       "name": s["name"], "content": s["content"], "is_pk": False}
+
+            tie_msg2 = f"🔄 第{tie_count}轮重新投票，仅可投票给平票候选人"
+            yield {"type": "system", "content": tie_msg2}
+            self._add_event("system", -1, tie_msg2)
+
+            game_state = self.get_game_state()
+            print(f"\n🔄 --- 第 {tie_count} 轮重新投票 ---")
+            print(f"   ├─ 仅可投票给平票候选人: {candidates}")
+            print(f"   └─ 存活玩家: {self.alive_players}")
+
+            while True:
+                votes, vote_details, tie_progress = self._collect_votes(
+                    game_state, candidates, human_vote=human_vote,
+                    tie_candidates=candidates, yield_progress=True,
+                )
+                for evt in tie_progress:
+                    yield evt
+
+                if not votes:
+                    print(f"\n🫱 本轮无人投票，直接跳过投票阶段")
+                    self._distribute_info_to_memories(
+                        "system", "本轮无人投票，跳过投票阶段",
+                        visibility="public", day=self.phase_controller.day,
+                    )
+                    eliminated = None
+                    break
+
+                max_votes_count = max(votes.values())
+                new_candidates = [p for p, v in votes.items() if v == max_votes_count]
+                if len(new_candidates) == 1:
+                    eliminated = new_candidates[0]
+                    role = self.role_manager.get_player_role(eliminated)
+                    name = self.role_manager.player_names.get(eliminated, f"玩家{eliminated}")
+                    print(f"\n⚔️ [淘汰] {name} ({role}) 被投票出局")
+                    self.alive_players.remove(eliminated)
+                    self._distribute_info_to_memories(
+                        "eliminate", f"{name}被投票出局，身份是{role}",
+                        target=eliminated, visibility="public",
+                        player_id=eliminated,
+                    )
+                    self._add_event("eliminate", eliminated, f"{name}被投票出局", role=role)
+                    final_votes = votes
+                    final_vote_details = vote_details
+                    break
+
+                tie_count += 1
+                final_votes = votes
+                final_vote_details = vote_details
+
+                candidate_names = [f"{c}号" for c in new_candidates]
+                yield {
+                    "type": "tie_break",
+                    "round": tie_count,
+                    "candidates": new_candidates,
+                }
+                tie_msg3 = f"⚖️ 平票！{'、'.join(candidate_names)}进入第{tie_count}轮PK发言"
+                yield {"type": "system", "content": tie_msg3}
+                self._add_event("system", -1, tie_msg3)
+
+                for candidate in new_candidates:
+                    for pid, agent in self.agents.items():
+                        if pid in self.alive_players:
+                            agent.memory.update_suspicion(candidate, 0.1, "平票嫌疑")
+
+                self.pending_tie_break = {
+                    'round': tie_count,
+                    'candidates': new_candidates,
+                    'votes': dict(votes),
+                    'vote_details': dict(vote_details),
+                }
+
+                if self.human_player_id in new_candidates and isinstance(self.agents.get(self.human_player_id), HumanAgent):
+                    yield {
+                        "type": "awaiting_tie_speech",
+                        "round": tie_count,
+                        "candidates": new_candidates,
+                    }
+                    return
+
+                candidates = new_candidates
+                _, pk_speeches = self._tie_break_speech(candidates)
+                for s in pk_speeches:
+                    yield {"type": "tie_speech", "player_id": s["player_id"],
+                           "name": s["name"], "content": s["content"], "is_pk": True}
+                other_speeches = self._tie_break_others_speech(candidates)
+                for s in other_speeches:
+                    yield {"type": "tie_speech", "player_id": s["player_id"],
+                           "name": s["name"], "content": s["content"], "is_pk": False}
+
+                tie_msg2 = f"🔄 第{tie_count}轮重新投票，仅可投票给平票候选人"
+                yield {"type": "system", "content": tie_msg2}
+                self._add_event("system", -1, tie_msg2)
+
+                print(f"\n🔄 --- 第 {tie_count} 轮重新投票 ---")
+                print(f"   ├─ 仅可投票给平票候选人: {candidates}")
+                print(f"   └─ 存活玩家: {self.alive_players}")
+                continue
+
+            winner = self.rule_checker.check_win_condition(self.alive_players)
+            if winner:
+                self.winner = winner
+                self.phase_controller.end_game(winner)
+            else:
+                self.phase_controller.next_phase()
+
+            yield {
+                "type": "done",
+                "votes": final_votes,
+                "vote_details": final_vote_details,
+                "eliminated": eliminated,
+                "game_over": winner is not None,
+                "winner": winner,
+            }
+            return
 
         game_state = self.get_game_state()
         valid_targets = tie_candidates if tie_candidates else self.alive_players
@@ -949,6 +1165,21 @@ class GameEngine:
                         for pid, agent in self.agents.items():
                             if pid in self.alive_players:
                                 agent.memory.update_suspicion(candidate, 0.1, "平票嫌疑")
+
+                    self.pending_tie_break = {
+                        'round': tie_count,
+                        'candidates': candidates,
+                        'votes': dict(votes),
+                        'vote_details': dict(vote_details),
+                    }
+
+                    if self.human_player_id in candidates and isinstance(self.agents.get(self.human_player_id), HumanAgent):
+                        yield {
+                            "type": "awaiting_tie_speech",
+                            "round": tie_count,
+                            "candidates": candidates,
+                        }
+                        return
 
                     # PK 发言（串行，因为发言有顺序依赖）
                     _, pk_speeches = self._tie_break_speech(candidates)
@@ -1060,7 +1291,7 @@ class GameEngine:
                 }
         return result
 
-    def _tie_break_speech(self, candidates: list) -> list:
+    def _tie_break_speech(self, candidates: list, human_speeches: dict = None) -> list:
         """平票PK发言环节
 
         Args:
@@ -1085,7 +1316,11 @@ class GameEngine:
 
             print(f"\n[{name}] (平票PK)")
             if isinstance(agent, HumanAgent):
-                content = input("请输入PK发言: ")
+                content = None
+                if human_speeches:
+                    content = human_speeches.get(pid)
+                if not content:
+                    content = "我觉得自己很清白，请相信我。"
             else:
                 wolf_teammates = []
                 if role == "狼人":
@@ -1115,7 +1350,7 @@ class GameEngine:
 
         return candidate_order, speeches
 
-    def _tie_break_others_speech(self, candidates: list) -> list:
+    def _tie_break_others_speech(self, candidates: list, allow_human_speech: bool = True) -> list:
         """平票PK后其余玩家发言环节
 
         Args:
@@ -1169,8 +1404,10 @@ class GameEngine:
             # 询问是否发言
             want_speak = False
             if isinstance(agent, HumanAgent):
-                choice = input("是否发言？(y/n): ").lower()
-                want_speak = (choice == 'y')
+                if not allow_human_speech:
+                    want_speak = False
+                else:
+                    want_speak = False
             else:
                 # AI玩家有60%概率发言
                 want_speak = random.random() < 0.6
@@ -1180,7 +1417,10 @@ class GameEngine:
                 continue
 
             if isinstance(agent, HumanAgent):
-                content = input("请输入发言: ")
+                if allow_human_speech:
+                    content = "我没有更多要说的了。"
+                else:
+                    content = ""
             else:
                 wolf_teammates = []
                 if role == "狼人":
