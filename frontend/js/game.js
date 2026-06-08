@@ -439,6 +439,11 @@ function renderSpeeches(history) {
             html += `<div class="speech-system">🗳️ ${content.replace(/\n/g, '<br>')}</div>`;
             continue;
         }
+
+        if (event.type === 'vote_summary') {
+            html += `<div class="speech-system vote">📊 ${content.replace(/\n/g, '<br>')}</div>`;
+            continue;
+        }
     }
 
     document.getElementById('speech-content').innerHTML = html;
@@ -550,6 +555,65 @@ function appendSpeechBubble(speech) {
     container.scrollTop = container.scrollHeight;
 }
 
+// ==================== 投票结果可视化面板 ====================
+function appendVoteSummaryPanel(data) {
+    var container = document.getElementById('speech-content');
+    if (!data || !data.voters) return;
+
+    var voters = data.voters || [];
+    var results = data.results || [];
+
+    // Build voter chips
+    var voterHTML = '';
+    for (var i = 0; i < voters.length; i++) {
+        var v = voters[i];
+        var isSelf = v.id === 1;
+        var cls = 'vote-chip';
+        if (isSelf) cls += ' self';
+        if (v.is_abstain) cls += ' abstain';
+
+        if (v.is_abstain) {
+            voterHTML += '<span class="' + cls + '">' + v.name + '(' + v.id + '号) → 弃权</span>';
+        } else {
+            voterHTML += '<span class="' + cls + '">' + v.name + '(' + v.id + '号) → ' + v.target_name + '(' + v.target + '号)</span>';
+        }
+    }
+
+    // Build result bars
+    var maxCount = 0;
+    for (var j = 0; j < results.length; j++) {
+        if (results[j].count > maxCount) maxCount = results[j].count;
+    }
+
+    var resultHTML = '';
+    for (var k = 0; k < results.length; k++) {
+        var r = results[k];
+        var pct = maxCount > 0 ? Math.round(r.count / maxCount * 100) : 100;
+        var isTop = r.count === maxCount && maxCount > 0;
+        var barCls = isTop ? 'vote-bar-fill top' : 'vote-bar-fill';
+        resultHTML +=
+            '<div class="vote-result-row">' +
+            '<div class="vote-result-label">' + r.name + '(' + r.id + '号)</div>' +
+            '<div class="vote-bar-track"><div class="' + barCls + '" style="width:' + pct + '%"></div></div>' +
+            '<div class="vote-result-count">' + r.count + '票</div>' +
+            '</div>';
+    }
+
+    if (results.length === 0) {
+        resultHTML = '<div class="vote-no-result">本轮无人投票</div>';
+    }
+
+    var panel = document.createElement('div');
+    panel.className = 'vote-summary-panel';
+    panel.innerHTML =
+        '<div class="vote-summary-header">📊 投票结果</div>' +
+        '<div class="vote-summary-voters">' + voterHTML + '</div>' +
+        '<div class="vote-summary-results">' + resultHTML + '</div>';
+
+    container.appendChild(panel);
+    container.scrollTop = container.scrollHeight;
+}
+
 // ==================== SSE 事件队列 — 按后端顺序逐条显示 ====================
 let eventQueue = [];             // 待显示的事件队列
 let eventQueueTimer = null;      // 当前定时器
@@ -583,6 +647,8 @@ function processEventQueue() {
         appendSpeechBubble(event);
     } else if (event.type === 'vote') {
         appendSystemMessage(event.content);
+    } else if (event.type === 'vote_summary') {
+        appendVoteSummaryPanel(event.data);
     }
 
     eventQueueTimer = setTimeout(processEventQueue, 1000);
@@ -1230,6 +1296,9 @@ async function executeVoteAction(isAbstain = false, extra_speeches = null) {
                             enqueueEvent(event);
                         } else if (event.type === 'system' || event.type === 'result') {
                             // 系统消息 — 随到随播
+                            enqueueEvent(event);
+                        } else if (event.type === 'vote_summary') {
+                            // 投票结果可视化面板
                             enqueueEvent(event);
                         } else if (event.type === 'done') {
                             // 等队列清空再处理投票结果

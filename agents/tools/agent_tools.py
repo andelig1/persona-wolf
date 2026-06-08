@@ -147,4 +147,43 @@ def create_agent_tools(memory, game_state_provider=None, inference_engine=None) 
         description="回忆之前记录的策略笔记。参数：category(suspicion/plan/observation/ally/threat)，留空返回全部"
     )
 
-    return [record_strategy_note, update_player_belief, set_round_goal, recall_strategy]
+    def _verify_claim(claim: str, target_player: str = "") -> str:
+        """事实核查：在你的记忆中搜索，验证某个说法是否有依据
+
+        参数:
+        - claim: 待验证的说法（如"3号在第2天投了1号"或"5号说过怀疑2号"）
+        - target_player: 涉及的目标玩家编号（可选）
+
+        用途：发言或投票前调用，避免编造不存在的事件。
+        返回: 是否找到相关记录，以及具体证据或"未找到"。
+        """
+        import re
+        from memory.rag_retriever import RAGRetriever
+
+        retriever = RAGRetriever(memory)
+        entries, summary = retriever.retrieve_for_verification(claim, top_k=3)
+
+        if not entries:
+            pid_hint = ""
+            if target_player:
+                try:
+                    pid = int(target_player) if target_player.isdigit() else int(re.findall(r'\d+', str(target_player))[0])
+                    pid_hint = f"\n\n提示：关于{pid}号玩家的所有记录如下：\n"
+                    all_about = memory.get_history(player_id=pid, limit=5)
+                    if all_about:
+                        pid_hint += "\n".join(f"[{e.event_type}] {e.content}" for e in all_about)
+                    else:
+                        pid_hint += "无记录。"
+                except (ValueError, IndexError):
+                    pass
+            return f"❌ 未找到支撑「{claim}」的记录。这个说法在记忆中找不到依据，请勿在发言中使用。{pid_hint}"
+
+        return f"✓ 找到相关记录：\n{summary}\n\n请据此如实发言，不要添油加醋。"
+
+    verify_claim = StructuredTool.from_function(
+        func=_verify_claim,
+        name="verify_claim",
+        description="事实核查工具：在记忆中搜索某个说法的依据，防止编造。发言或投票前使用。参数：claim(待验证的说法)，target_player(可选，涉及的玩家编号)"
+    )
+
+    return [record_strategy_note, update_player_belief, set_round_goal, recall_strategy, verify_claim]

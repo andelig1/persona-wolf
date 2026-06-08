@@ -8,12 +8,30 @@ class VillagerStrategy:
 
     def suggest_vote(self, memory, alive_players: list,
                      wolf_teammates: list = None) -> Optional[int]:
-        """投票：投嫌疑度最高的"""
+        """投票：加权随机（而非确定性的max），避免所有村民投同一个人"""
         candidates = [p for p in alive_players if p != memory.agent_id]
         if not candidates:
             return None
         suspicion = memory.get_suspicion_levels()
-        return max(candidates, key=lambda p: suspicion.get(p, 0))
+        # 加权随机：嫌疑度越高的玩家被选中的概率越大，但不保证一定选中
+        # 转换为正权重（suspicion 可能是负数）
+        weights = []
+        for p in candidates:
+            s = suspicion.get(p, 0)
+            # 将 [-1, 1] 映射到 [0.1, 2.0]，负数也有正权重
+            w = max(0.1, s + 1.1)
+            weights.append(w)
+        total = sum(weights)
+        if total <= 0:
+            return random.choice(candidates)
+        # 加权随机选择
+        r = random.random() * total
+        cumulative = 0
+        for i, p in enumerate(candidates):
+            cumulative += weights[i]
+            if r <= cumulative:
+                return p
+        return candidates[-1]  # fallback
 
     def suggest_night_action(self, memory, alive_players: list,
                              kwargs: dict = None) -> Optional[Dict]:

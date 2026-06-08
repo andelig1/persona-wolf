@@ -40,6 +40,11 @@ class GameEngine:
         self.history: List[Dict] = []
         self.winner: Optional[str] = None
 
+        # 发言顺序缓存 —— 避免同一轮内多次调用 _get_speaking_order() 产生不同随机结果
+        # 导致 resume_from 位置与发言顺序对不上
+        self._cached_order_key = None
+        self._cached_order = None
+
         # 夜晚状态
         self.werewolf_kill_target: Optional[int] = None
         self.witch_has_save: bool = True
@@ -327,6 +332,12 @@ class GameEngine:
                 "death", f"第{self.phase_controller.day-1}晚{', '.join(dead_names)}死亡",
                 visibility="public", day=self.phase_controller.day-1,
             )
+            # ★ 触发信念审计：玩家死亡是重要新证据
+            # 夜晚死亡不公布身份，但死亡本身说明该玩家不是当晚动手的狼人
+            death_evidence = [
+                {"type": "player_died", "player_id": d} for d in dead
+            ]
+            self._trigger_belief_audit(death_evidence, trigger_reason="夜晚死亡")
         else:
             self._distribute_info_to_memories(
                 "death", f"第{self.phase_controller.day-1}晚是平安夜，没有人死亡",
@@ -516,15 +527,25 @@ class GameEngine:
         }
 
     def _get_speaking_order(self) -> list:
-        """计算发言顺序：
+        """计算发言顺序（带缓存，同一轮内多次调用返回相同顺序）：
         - 从昨晚死亡玩家后面的位置开始发言
         - 若当晚多人死亡则选择位置较前的玩家后面开始发言
-        - 当晚无人死亡则从玩家1开始发言
+        - 当晚无人死亡则随机选择起始玩家
+
+        缓存机制：day_step_stream 在一次完整发言轮次中会被调用多次
+        （前端暂停→续播），每次调用 _get_speaking_order 必须返回同一个顺序，
+        否则 resume_from 位置会与新顺序错位，导致玩家重复发言或跳过发言。
         """
+        day = self.phase_controller.day
         alive = sorted(self.alive_players)
+        # 缓存键 = 天数 + 存活玩家组合（死亡改变存活列表时自动刷新）
+        cache_key = (day, tuple(alive))
+        if self._cached_order is not None and self._cached_order_key == cache_key:
+            return self._cached_order
+
         print(f"[发言顺序调试] 存活玩家: {alive}")
         print(f"[发言顺序调试] 昨晚死亡玩家: {self.last_night_dead}")
-        
+
         if self.last_night_dead:
             # 选择位置最靠前的死亡玩家
             first_dead = min(self.last_night_dead)
@@ -539,16 +560,19 @@ class GameEngine:
             if start_idx is None:
                 start_idx = 0
         else:
-            # 无人死亡，从玩家1开始
-            if 1 in alive:
-                start_idx = alive.index(1)
-            else:
-                start_idx = 0
+            # 无人死亡，随机选择一个存活玩家作为起始发言者
+            # 避免人类玩家（1号）总是第一个发言成为靶子
+            import random
+            start_idx = random.randrange(0, len(alive))
 
         print(f"[发言顺序调试] 开始索引: {start_idx}")
         # 生成发言顺序（从start_idx开始，循环整个存活列表）
         order = alive[start_idx:] + alive[:start_idx]
         print(f"[发言顺序调试] 最终发言顺序: {order}")
+
+        # 缓存本轮的发言顺序
+        self._cached_order_key = cache_key
+        self._cached_order = order
         return order
 
     def _handle_human_speech(self, pid: int, round_num: int = 1,
@@ -812,6 +836,15 @@ class GameEngine:
             others = [p for p in valid_targets if p != pid]
             target = random.choice(others) if others else None
 
+        # ★ 最后防线：狼人绝对不能投队友
+        if role == "狼人" and target is not None and target in wolf_teammates:
+            import random
+            safe_targets = [p for p in valid_targets if p != pid and p not in wolf_teammates]
+            if safe_targets:
+                target = random.choice(safe_targets)
+            else:
+                target = None  # 没有合法目标则弃权
+
         return {
             "pid": pid, "target": target, "role": role, "name": name,
         }
@@ -996,6 +1029,10 @@ class GameEngine:
                 )
                 for evt in tie_progress:
                     yield evt
+                # ★ 投票汇总消息
+                if vote_details:
+                    data = self._yield_vote_summary(vote_details, votes)
+                    yield {"type": "vote_summary", "data": data}
 
                 if not votes:
                     print(f"\n🫱 本轮无人投票，直接跳过投票阶段")
@@ -1020,6 +1057,11 @@ class GameEngine:
                         player_id=eliminated,
                     )
                     self._add_event("eliminate", eliminated, f"{name}被投票出局", role=role)
+                    # ★ 触发信念审计：投票出局公布身份是关键新证据
+                    self._trigger_belief_audit(
+                        [{"type": "death_role_reveal", "player_id": eliminated, "role": role}],
+                        trigger_reason=f"投票出局({eliminated}号, {role})"
+                    )
                     final_votes = votes
                     final_vote_details = vote_details
                     break
@@ -1109,6 +1151,10 @@ class GameEngine:
         )
         for evt in progress_events:
             yield evt
+        # ★ 投票汇总消息
+        if vote_details:
+            data = self._yield_vote_summary(vote_details, votes)
+            yield {"type": "vote_summary", "data": data}
 
         # 全员弃权
         if not votes:
@@ -1143,6 +1189,11 @@ class GameEngine:
                         player_id=eliminated,
                     )
                     self._add_event("eliminate", eliminated, f"{name}被投票出局", role=role)
+                    # ★ 触发信念审计：投票出局公布身份是关键新证据
+                    self._trigger_belief_audit(
+                        [{"type": "death_role_reveal", "player_id": eliminated, "role": role}],
+                        trigger_reason=f"投票出局({eliminated}号, {role})"
+                    )
                     final_votes = votes
                     final_vote_details = vote_details
                 else:
@@ -1250,6 +1301,10 @@ class GameEngine:
                     )
                     for evt in tie_progress:
                         yield evt
+                    # ★ 投票汇总消息
+                    if vote_details:
+                        data = self._yield_vote_summary(vote_details, votes)
+                        yield {"type": "vote_summary", "data": data}
 
         if eliminated is None and tie_count >= 3:
             print(f"\n⚖️ 平票三轮未决，无人被投票出局")
@@ -1522,6 +1577,111 @@ class GameEngine:
         if target is not None:
             event["target"] = target
         self.history.append(event)
+
+    def _build_vote_summary_data(self, vote_details: dict, votes: dict) -> dict:
+        """构建投票汇总结构化数据（供前端渲染可视化面板）
+
+        Returns:
+            {
+                "voters": [{"id": 1, "name": "玩家1", "target": 3, "target_name": "玩家3", "is_abstain": false}, ...],
+                "results": [{"id": 3, "name": "玩家3", "count": 2}, ...],
+                "total_voters": 6
+            }
+        """
+        alive = sorted(self.alive_players)
+        voters = []
+        for pid in alive:
+            name = self.role_manager.player_names.get(pid, f"玩家{pid}")
+            target = vote_details.get(pid)  # None = 弃权
+            if target is not None:
+                tname = self.role_manager.player_names.get(target, f"玩家{target}")
+                voters.append({
+                    "id": pid, "name": name,
+                    "target": target, "target_name": tname,
+                    "is_abstain": False,
+                })
+            else:
+                voters.append({
+                    "id": pid, "name": name,
+                    "target": None, "target_name": None,
+                    "is_abstain": True,
+                })
+
+        results = []
+        if votes:
+            for target, count in sorted(votes.items(), key=lambda x: -x[1]):
+                tname = self.role_manager.player_names.get(target, f"玩家{target}")
+                results.append({"id": target, "name": tname, "count": count})
+
+        return {
+            "voters": voters,
+            "results": results,
+            "total_voters": len(alive),
+        }
+
+    def _yield_vote_summary(self, vote_details: dict, votes: dict) -> dict:
+        """生成投票汇总数据，分发到记忆和历史，返回结构化数据"""
+        data = self._build_vote_summary_data(vote_details, votes)
+        # 构建纯文本版本用于记忆和历史记录
+        text_parts = []
+        for v in data["voters"]:
+            if v["is_abstain"]:
+                text_parts.append(f"{v['name']}({v['id']}号)→弃权")
+            else:
+                text_parts.append(f"{v['name']}({v['id']}号)→{v['target_name']}({v['target']}号)")
+        text_msg = "📊 投票: " + " | ".join(text_parts)
+        if data["results"]:
+            rp = [f"{r['name']}({r['id']}号){r['count']}票" for r in data["results"]]
+            text_msg += "  |  结果: " + " | ".join(rp)
+        else:
+            text_msg += "  |  结果: 无人投票"
+
+        self._distribute_info_to_memories(
+            "vote_summary", text_msg,
+            visibility="public", day=self.phase_controller.day,
+        )
+        self._add_event("vote_summary", -1, text_msg)
+        return data
+
+    def _trigger_belief_audit(self, new_evidence: List[dict], trigger_reason: str = ""):
+        """新证据出现时，触发所有 AI Agent 的信念审计
+
+        信念审计会：
+        1. 基于新角色揭示重新评估旧判断
+        2. 衰减过时的信念置信度
+        3. 标记低置信度的极端判断
+
+        Args:
+            new_evidence: [{"type": "death_role_reveal", "player_id": 3, "role": "预言家"}, ...]
+            trigger_reason: 触发原因（用于日志）
+        """
+        from agents.react_agent import ReActWerewolfAgent
+
+        for pid, agent in self.agents.items():
+            if pid not in self.alive_players:
+                continue
+            if not isinstance(agent, ReActWerewolfAgent):
+                continue
+
+            try:
+                revisions = agent.memory.belief_tracker.audit_beliefs(
+                    new_evidence=new_evidence,
+                    current_day=self.phase_controller.day,
+                    alive_players=self.alive_players,
+                )
+                if revisions:
+                    # 将修正记录注入 Agent 私有记忆（作为内部反思）
+                    for rev in revisions:
+                        agent.memory.add_memory(
+                            "system",
+                            f"[内部反思] {rev}",
+                            {"day": self.phase_controller.day,
+                             "phase": "belief_audit",
+                             "trigger": trigger_reason}
+                        )
+            except Exception as e:
+                # 信念审计失败不应阻断游戏
+                pass
 
     def get_winner(self) -> Optional[str]:
         return self.winner

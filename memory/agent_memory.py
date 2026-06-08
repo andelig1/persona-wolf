@@ -88,10 +88,15 @@ class StrategicMemory:
 
 
 class BeliefTracker:
-    """信念追踪 — 对每个玩家形成结构化的信念"""
+    """信念追踪 — 对每个玩家形成结构化的信念
+
+    支持信念审计（Belief Audit）：新证据出现时重新评估所有旧信念，
+    自动降级过时或矛盾的判断，防止 Agent 固守错误推理。
+    """
 
     def __init__(self):
         self.beliefs: Dict[int, PlayerBelief] = {}
+        self.audit_log: List[str] = []  # 审计历史
 
     def update_belief(self, player_id: int, suspicion_delta: float = None,
                       suspected_role: str = None, reason: str = None,
@@ -160,3 +165,107 @@ class BeliefTracker:
             lines.append("")
 
         return "\n".join(lines)
+
+    def audit_beliefs(self, new_evidence: List[dict], current_day: int,
+                      alive_players: List[int] = None) -> List[str]:
+        """信念审计 —— 新证据出现后重新评估所有旧信念
+
+        触发时机：夜晚死亡公布后、投票出局公布身份后、预言家跳身份后
+
+        Args:
+            new_evidence: [{"type": "death_role_reveal", "player_id": 3, "role": "预言家"}, ...]
+            current_day: 当前天数
+            alive_players: 当前存活玩家列表
+
+        Returns:
+            修正记录列表（可注入 Agent 记忆）
+        """
+        revisions = []
+
+        for pid, belief in list(self.beliefs.items()):
+            old_confidence = belief.confidence
+            old_suspicion = belief.suspicion
+
+            # === 规则1：死亡角色揭晓 → 重新评估对此人的判断 ===
+            for ev in new_evidence:
+                if ev.get("player_id") != pid:
+                    continue
+
+                etype = ev.get("type", "")
+
+                if etype == "death_role_reveal":
+                    revealed_role = ev.get("role", "")
+                    # 之前怀疑的神职其实是好人 → 大幅降级
+                    if revealed_role in ["预言家", "女巫"] and belief.suspicion > 0.3:
+                        belief.suspicion = max(-0.5, belief.suspicion - 0.8)
+                        belief.confidence *= 0.3
+                        belief.suspected_role = revealed_role
+                        revisions.append(
+                            f"⚡信念修正: 之前怀疑{pid}号(置信{old_confidence:.0%})，"
+                            f"但ta是{revealed_role}→嫌疑从{old_suspicion:.2f}降至{belief.suspicion:.2f}"
+                        )
+                    # 确认是狼人 → 之前信任的判断是错的
+                    elif revealed_role == "狼人" and belief.suspicion < -0.2:
+                        belief.suspicion = 1.0
+                        belief.confidence = 1.0
+                        belief.suspected_role = "狼人"
+                        revisions.append(
+                            f"⚡信念修正: 之前信任{pid}号(置信{old_confidence:.0%})，"
+                            f"但ta是狼人→更新为完全不可信"
+                        )
+                    # 该玩家已死 → 冻结信念
+                    belief.confidence = 0.99
+                    belief.last_updated_day = current_day
+
+                elif etype == "seer_claim":
+                    # 有人跳预言家 → 提升对此人的关注但不直接信任
+                    if belief.suspicion > 0.2:
+                        belief.confidence *= 0.8
+                        revisions.append(
+                            f"⚡信念微调: {pid}号跳预言家，之前怀疑度{old_suspicion:.2f}，"
+                            f"暂不改变但降低置信度→{belief.confidence:.0%}"
+                        )
+
+            # === 规则2：信念超过1.5天未更新 → 衰减置信度 ===
+            days_stale = current_day - belief.last_updated_day
+            if belief.last_updated_day > 0 and days_stale > 1.5:
+                decay = max(0.3, 0.75 ** days_stale)
+                new_conf = belief.confidence * decay
+                if abs(new_conf - belief.confidence) > 0.05:
+                    revisions.append(
+                        f"⏳信念衰减: 对{pid}号的判断已{days_stale:.0f}天未更新，"
+                        f"置信度从{belief.confidence:.0%}衰减至{new_conf:.0%}"
+                    )
+                belief.confidence = new_conf
+
+            # === 规则3：低置信度(<30%)但有强怀疑(>0.5) → 标记为"直觉" ===
+            if belief.confidence < 0.3 and abs(belief.suspicion) > 0.5:
+                old_sus = belief.suspicion
+                # 向中性靠拢（不确定就别太绝对）
+                belief.suspicion *= 0.7
+                if abs(old_sus - belief.suspicion) > 0.1:
+                    revisions.append(
+                        f"⚡信念校准: 对{pid}号的判断置信度仅{belief.confidence:.0%}，"
+                        f"但嫌疑度{old_sus:.2f}过于极端，已向中性靠拢→{belief.suspicion:.2f}"
+                    )
+
+        # 记录审计日志
+        if revisions:
+            self.audit_log.append(f"[第{current_day}天] 审计修正 {len(revisions)} 条")
+
+        return revisions
+
+    def decay_old_beliefs(self, current_day: int) -> List[str]:
+        """简易版：仅执行时效衰减，不依赖新证据"""
+        revisions = []
+        for pid, belief in list(self.beliefs.items()):
+            days_stale = current_day - belief.last_updated_day
+            if belief.last_updated_day > 0 and days_stale > 2:
+                decay = max(0.3, 0.8 ** days_stale)
+                new_conf = belief.confidence * decay
+                if abs(new_conf - belief.confidence) > 0.05:
+                    revisions.append(
+                        f"对{pid}号的信念已{days_stale}天未更新，置信度→{new_conf:.0%}"
+                    )
+                belief.confidence = new_conf
+        return revisions

@@ -12,6 +12,7 @@ from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, Tool
 from .base_agent import BaseAgent
 from memory.memory_manager import AgentMemory
 from memory.inference_engine import InferenceEngine
+from memory.rag_retriever import RAGRetriever
 from agents.tools import create_tools_for_role
 from agents.personalities import get_personality_prompt
 from agents.strategies import get_strategy
@@ -51,6 +52,7 @@ class ReActWerewolfAgent(BaseAgent):
             role, self.memory, self.game_state_provider, self.inference_engine
         )
         self.strategy = get_strategy(role)
+        self.rag_retriever = RAGRetriever(self.memory)  # RAG 精检索器
         self._agent = None  # ReAct Agent（用于vote/night_action）
         self._speak_agent = None  # ReAct Agent（用于speak）
 
@@ -100,10 +102,11 @@ class ReActWerewolfAgent(BaseAgent):
 3. 如有新的推理结论，用 record_strategy_note 记录
 4. 最后回复纯发言文本"""
         elif action_type == "vote":
-            return """建议步骤（快速投票，最多调2个工具）：
-1. 用 check_suspicion_levels 看你对各玩家的怀疑度
-2. 如果需要回顾发言，用 review_game_history 只看最近几轮
-3. 直接回复一个玩家编号，或回复"弃权"跳过"""
+            return """建议步骤（发言优先，嫌疑度仅作参考）：
+1. 先回顾你本轮的发言内容（上面"你本轮发言说的是"部分），你说了要投谁就投谁——发言和投票必须一致
+2. 如果你在发言中说了"弃权"、"不确定"、或没有指向任何人，那再去看 check_suspicion_levels 决定投谁
+3. 直接回复一个玩家编号，或回复"弃权"跳过
+重要：如果你发言中明确怀疑了某人，投票必须是那个人。不要发言说怀疑A却投了B。"""
         else:  # night_action
             return """建议步骤：
 1. 先用 recall_strategy 回忆你的策略
@@ -301,11 +304,167 @@ class ReActWerewolfAgent(BaseAgent):
 
         return text.strip()
 
+    # ==================== Self-Reflection: 发言验证 ====================
+
+    def _self_reflection_check(self, draft_speech: str, retrieved_evidence: list,
+                                game_state: dict, internal_monologue: str = "") -> dict:
+        """阶段2.5 — Self-Reflection 验证
+
+        在发言草稿生成后、正式输出前，验证其事实准确性。
+
+        Args:
+            draft_speech: 阶段2生成的发言草稿
+            retrieved_evidence: RAG 检索到的相关记忆
+            game_state: 当前游戏状态
+            internal_monologue: 阶段1的内心独白（用于交叉验证）
+
+        Returns:
+            {"pass": bool, "issues": list, "severity": "low/medium/high",
+             "corrected_speech": str or None}
+        """
+        if not draft_speech or len(draft_speech) < 3:
+            return {"pass": True, "issues": [], "severity": "low", "corrected_speech": None}
+
+        from utils.llm_client import get_llm_client
+
+        # 格式化证据
+        if retrieved_evidence:
+            evidence_text = self.rag_retriever.format_retrieved_context(retrieved_evidence)
+        else:
+            evidence_text = "（无检索证据，这是首轮发言）"
+
+        alive = game_state.get("alive_players", [])
+        day = game_state.get("day", 1)
+
+        reflection_prompt = f"""你是狼人杀事实核查员。请检查以下 AI 玩家的发言草稿是否与游戏记录一致。
+
+【发言草稿】
+{draft_speech}
+
+【游戏记录（精确）】
+{evidence_text}
+
+【当前状态】第{day}天，存活: {alive}
+
+【玩家内心想法】
+{internal_monologue[:200] if internal_monologue else "（无）"}
+
+按以下 6 条逐项检查（少即是多，只报真正的问题）：
+
+1. **编造发言**：发言中说"X号说过Y"——记录中X号真的说过吗？没有→标记为 FACT_FABRICATION
+2. **天数错误**：发言中提到"昨天/第X天"——天数对吗？不对→标记为 TIME_ERROR
+3. **越权信息**：发言中透露出不该知道的信息（如村民知道查验结果）→标记为 INFO_LEAK
+4. **过度自信**：用了"肯定/绝对/一定"但记录中没有证据支撑→标记为 OVERCONFIDENT
+5. **自相矛盾**：发言内容与内心独白矛盾（如内心怀疑3号但发言却说信任3号）→标记为 SELF_CONTRADICT
+6. **元语言泄露**：发言中出现"工具"、"查询"、"分析结果"等后台术语→标记为 META_LEAK
+
+输出 JSON（不要输出其他内容）：
+{{"pass": true/false, "issues": ["具体问题描述"], "severity": "low/medium/high",
+ "corrected_speech": "修正后的发言（仅pass=false且severity!=low时需要）"}}
+
+如果 pass=true，corrected_speech 字段留空字符串。
+如果 severity=low，即使 pass=false 也保持原发言（小问题不值得打断游戏流畅性）。"""
+
+        try:
+            llm = get_llm_client().llm
+            response = llm.invoke([
+                SystemMessage(content="你是事实核查员。只输出 JSON，不要解释。"),
+                HumanMessage(content=reflection_prompt),
+            ])
+            result = self._parse_reflection_result(response.content)
+            get_logger().phase(
+                f"Self-Reflection: pass={result['pass']}, severity={result.get('severity','?')}, "
+                f"issues={len(result.get('issues',[]))}",
+                agent_id=self.id, agent_role=self.role, action="reflect"
+            )
+            return result
+        except Exception as e:
+            get_logger().error(f"Self-reflection failed: {type(e).__name__}: {e}",
+                               agent_id=self.id, agent_role=self.role)
+            return {"pass": True, "issues": [], "severity": "low", "corrected_speech": None}
+
+    @staticmethod
+    def _parse_reflection_result(text: str) -> dict:
+        """解析 Self-Reflection 的 JSON 输出"""
+        import json
+        text = (text or "").strip()
+        # 提取 JSON 块
+        json_match = re.search(r'\{[^{}]*"pass"[^{}]*\}', text, re.DOTALL)
+        if json_match:
+            try:
+                return json.loads(json_match.group(0))
+            except json.JSONDecodeError:
+                pass
+        # 回退：判断文本中是否有"pass": true
+        if '"pass": true' in text or '"pass":true' in text:
+            return {"pass": True, "issues": [], "severity": "low", "corrected_speech": None}
+        if '"pass": false' in text or '"pass":false' in text:
+            return {"pass": False, "issues": ["reflection flagged issues"],
+                    "severity": "medium", "corrected_speech": None}
+        return {"pass": True, "issues": [], "severity": "low", "corrected_speech": None}
+
+    # ==================== Speech-Vote 一致性检查 ====================
+
+    def _check_speech_vote_consistency(self, speech: str, vote_target: int,
+                                        game_state: dict) -> dict:
+        """投票前检查：发言和投票是否一致
+
+        Args:
+            speech: 本轮自己的发言
+            vote_target: 投票目标（None=弃权）
+            game_state: 游戏状态
+
+        Returns:
+            {"consistent": bool, "reason": str, "severity": "low/medium/high"}
+        """
+        if not speech or vote_target is None:
+            return {"consistent": True, "reason": "无发言或缺省投票", "severity": "low"}
+
+        from utils.llm_client import get_llm_client
+
+        alive = game_state.get("alive_players", [])
+        check_prompt = f"""检查发言和投票是否一致：
+
+发言：「{speech}」
+投票目标：{vote_target}号
+存活玩家：{alive}
+
+判断标准（严格的）：
+- 发言中明确说怀疑/要投某人X，但实际投了Y（X≠Y）→ 不一致，severity=high
+- 发言中完全没有提到投票目标但提到了其他玩家编号 → 不一致，severity=high
+- 发言中说"弃权"但实际投了票 → 不一致，severity=high
+- 发言中含糊其辞没有明确指向任何人 → 投票任意目标都算一致（severity=low）
+- 发言中怀疑多人，投了其中一个 → 一致（severity=low）
+
+输出 JSON：{{"consistent": true/false, "reason": "简短理由", "severity": "low/medium/high"}}"""
+
+        try:
+            llm = get_llm_client().llm
+            response = llm.invoke([
+                SystemMessage(content="你是投票审核员。只输出 JSON。"),
+                HumanMessage(content=check_prompt),
+            ])
+            result = self._parse_reflection_result(response.content)
+            if not result.get("consistent", True):
+                get_logger().warning(
+                    f"Speech-vote mismatch: said '{speech[:50]}...' "
+                    f"but voted {vote_target}. Reason: {result.get('reason','?')}",
+                    agent_id=self.id, agent_role=self.role
+                )
+            return result
+        except Exception as e:
+            get_logger().error(f"Consistency check failed: {e}",
+                               agent_id=self.id, agent_role=self.role)
+            return {"consistent": True, "reason": "check failed, default pass", "severity": "low"}
+
+    # ==================== speak: 两阶段 + Self-Reflection ====================
+
     def _invoke_speak_agent(self, task_description: str, game_state: dict = None,
                             kwargs: dict = None, phase2_user_message: str = None) -> str:
-        """两阶段发言：
+        """三阶段发言（原两阶段 + Self-Reflection）：
         阶段1 — ReAct Agent 用工具分析局势（不生成发言）
-        阶段2 — 直接 LLM 调用生成纯发言
+        阶段2 — 直接 LLM 调用生成发言草稿
+        阶段2.5 — Self-Reflection 验证草稿的事实准确性
         """
         game_state = game_state or {}
         kwargs = kwargs or {}
@@ -321,15 +480,23 @@ class ReActWerewolfAgent(BaseAgent):
             else:
                 print(f"[_invoke_speak_agent调试] _speak_agent已存在")
 
+            # === ★ RAG 检索：精检索相关记忆（替代全量注入） ===
+            day = game_state.get("day", 1)
+            retrieved_evidence = self.rag_retriever.retrieve_context_for_speak(
+                game_state, self.id, day, top_k=8
+            )
+            rag_context = self.rag_retriever.format_retrieved_context(retrieved_evidence)
+            enhanced_task = task_description + "\n\n【精选游戏记录】\n" + rag_context
+
             # === 阶段1: ReAct Agent 推理 + 工具调用 ===
             logger = get_logger()
-            logger.phase("阶段1: ReAct推理开始", agent_id=self.id,
+            logger.phase("阶段1: ReAct推理开始(RAG增强)", agent_id=self.id,
                          agent_role=self.role, action="speak")
-            
+
             print(f"[_invoke_speak_agent调试] 阶段1: 开始调用_react_agent.invoke()...")
             try:
                 result = self._speak_agent.invoke({
-                    "messages": [HumanMessage(content=task_description)]
+                    "messages": [HumanMessage(content=enhanced_task)]
                 })
                 print(f"[_invoke_speak_agent调试] 阶段1: _react_agent.invoke()调用成功")
             except Exception as e:
@@ -337,35 +504,60 @@ class ReActWerewolfAgent(BaseAgent):
                 import traceback
                 print(f"[_invoke_speak_agent调试] 阶段1: 异常堆栈: {traceback.format_exc()}")
                 raise  # 重新抛出异常
-            
+
             messages = result.get("messages", [])
             print(f"[_invoke_speak_agent调试] 阶段1: 返回消息数量: {len(messages)}")
             self._log_tool_calls(messages, "speak")
 
-            # === 阶段2: 提取内部独白，直接 LLM 生成发言 ===
+            # === 阶段2: 提取内部独白，直接 LLM 生成发言草稿 ===
             print(f"[_invoke_speak_agent调试] 阶段2: 开始提取内部独白...")
-            logger.phase("阶段2: 生成发言", agent_id=self.id,
+            logger.phase("阶段2: 生成发言草稿", agent_id=self.id,
                          agent_role=self.role, action="speak")
             internal_monologue = self._extract_internal_monologue(messages)
             print(f"[_invoke_speak_agent调试] 阶段2: 内部独白: '{internal_monologue}'")
-            
+
             print(f"[_invoke_speak_agent调试] 阶段2: 开始调用_generate_clean_speech...")
-            speech = self._generate_clean_speech(
+            draft_speech = self._generate_clean_speech(
                 phase2_user_message, internal_monologue, game_state, kwargs
             )
-            print(f"[_invoke_speak_agent调试] 阶段2: _generate_clean_speech返回: '{speech}'")
+            print(f"[_invoke_speak_agent调试] 阶段2: 草稿: '{draft_speech}'")
 
-            if speech:
-                logger.speak_result(speech, agent_id=self.id,
-                                    agent_role=self.role)
-                return speech
-            else:
+            if not draft_speech:
                 for msg in reversed(messages):
                     if isinstance(msg, AIMessage) and msg.content:
                         cleaned = self._clean_speech_output(msg.content.strip())
                         if cleaned:
                             return cleaned
                 return ""
+
+            # === ★ 阶段2.5: Self-Reflection 验证 ===
+            print(f"[_invoke_speak_agent调试] 阶段2.5: 开始 Self-Reflection...")
+            logger.phase("阶段2.5: Self-Reflection验证", agent_id=self.id,
+                         agent_role=self.role, action="reflect")
+
+            reflection = self._self_reflection_check(
+                draft_speech, retrieved_evidence, game_state, internal_monologue
+            )
+
+            if not reflection.get("pass", True) and reflection.get("severity", "low") != "low":
+                corrected = reflection.get("corrected_speech")
+                if corrected and len(corrected.strip()) >= 3:
+                    issues = reflection.get("issues", [])
+                    logger.warning(
+                        f"Self-reflection corrected speech. Issues: {issues}",
+                        agent_id=self.id, agent_role=self.role
+                    )
+                    print(f"[_invoke_speak_agent调试] 阶段2.5: 发言已修正。问题: {issues}")
+                    logger.speak_result(corrected, agent_id=self.id, agent_role=self.role)
+                    return corrected
+                else:
+                    logger.warning(
+                        f"Self-reflection failed but no valid correction. Using draft.",
+                        agent_id=self.id, agent_role=self.role
+                    )
+
+            logger.speak_result(draft_speech, agent_id=self.id, agent_role=self.role)
+            return draft_speech
         except Exception as e:
             print(f"[_invoke_speak_agent调试] 抛出异常: {type(e).__name__}: {e}")
             import traceback
@@ -528,7 +720,12 @@ class ReActWerewolfAgent(BaseAgent):
         alive = game_state.get("alive_players", [])
         # 平票重投时只能投平票候选人
         tie_options = kwargs.get("vote_options")
-        candidates = [p for p in (tie_options if tie_options else alive) if p != self.id]
+        wolf_teammates = kwargs.get("wolf_teammates", [])
+        # 排除自己 + 狼队友（狼人不可互投）
+        exclude = {self.id}
+        if self.role == "狼人" and wolf_teammates:
+            exclude.update(wolf_teammates)
+        candidates = [p for p in (tie_options if tie_options else alive) if p not in exclude]
 
         get_logger().set_context(day=day, phase="投票")
 
@@ -548,11 +745,10 @@ class ReActWerewolfAgent(BaseAgent):
 
         # 队友提醒（告知但不强制）
         teammate_reminder = ""
-        wolf_teammates = kwargs.get("wolf_teammates", [])
         if self.role == "狼人" and wolf_teammates:
             others = [t for t in wolf_teammates if t != self.id]
             if others:
-                teammate_reminder = f"\n你的狼队友是: {', '.join(f'{t}号' for t in others)}。"
+                teammate_reminder = f"\n你的狼队友是: {', '.join(f'{t}号' for t in others)}。绝对不能投队友！"
 
         task = f"""你是{self.id}号玩家。
 
@@ -565,7 +761,10 @@ class ReActWerewolfAgent(BaseAgent):
         if my_speech:
             task += """
 
-上面是你本轮说的话，投你发言时最怀疑的那个人。"""
+上面是你本轮说的话。你的投票必须和你说的保持一致：
+- 如果你说了怀疑某人 → 就投那个人
+- 如果你说了"弃权"或"不确定" → 可以弃权
+- 不要发言说怀疑A却投B，这是自相矛盾"""
         else:
             task += """
 
@@ -595,6 +794,30 @@ class ReActWerewolfAgent(BaseAgent):
         if target is None:
             wolf_teammates = kwargs.get("wolf_teammates", [])
             target = self.strategy.suggest_vote(self.memory, alive, wolf_teammates)
+
+        # === ★ Speech-Vote 一致性检查 ===
+        if my_speech and target is not None and target > 0:
+            consistency = self._check_speech_vote_consistency(
+                my_speech, target, game_state
+            )
+            if not consistency.get("consistent", True):
+                severity = consistency.get("severity", "low")
+                if severity == "high":
+                    # 严重不一致：尝试修正——从发言中提取最怀疑的人
+                    get_logger().warning(
+                        f"Speech-vote HIGH mismatch, attempting correction. "
+                        f"Speech: '{my_speech[:60]}...', Voted: {target}",
+                        agent_id=self.id, agent_role=self.role
+                    )
+                    # 简单修正：如果发言中明确提到怀疑某人且那人在候选名单中
+                    import re as _re
+                    for pid in candidates:
+                        if _re.search(rf'{pid}\s*号.*?(?:可疑|怀疑|狼|投|问题|不对)', my_speech):
+                            get_logger().info(
+                                f"Corrected vote from {target} to {pid} based on speech",
+                                agent_id=self.id, agent_role=self.role
+                            )
+                            return pid
 
         return target
 

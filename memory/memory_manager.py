@@ -262,8 +262,20 @@ class AgentMemory:
         is_early_game = (day == 1 and round_num == 1)
         is_first_speaker = (position == 1)
 
+        # ★ 检测人类玩家标记：人类发言在记忆中带有 [真人] 标签
+        is_human_speech = "[真人]" in content_lower or "[真人]" in content
+        if is_human_speech:
+            # 人类玩家的发言应更宽松——他们不像 AI 那样知道如何"表演"
+            # 将调整幅度减半，保护人类玩家不被启发式规则误判
+            score *= 0.5
+
         early_game_len_threshold = 10 if (is_early_game and is_first_speaker) else 15
         early_game_accusation_threshold = 5 if (is_early_game and is_first_speaker) else 3
+
+        # 首轮第一个发言的人（信息最少）——额外保护
+        if is_early_game and is_first_speaker:
+            # 第一轮第一个发言的人没有前人可以参考，不应因短发言而受罚
+            score -= 0.03  # 轻微信任加成
 
         # === 1. 逻辑连贯性分析 ===
         logical_indicators = ["因为", "所以", "理由是", "证据是", "我认为", "我的观点是"]

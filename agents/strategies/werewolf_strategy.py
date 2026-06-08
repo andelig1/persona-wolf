@@ -8,18 +8,31 @@ class WerewolfStrategy:
 
     def suggest_vote(self, memory, alive_players: list,
                      wolf_teammates: list = None) -> Optional[int]:
-        """投票：避开队友，优先投威胁大的好人"""
+        """投票：避开队友，在好人中分散投票（避免所有狼投同一个人暴露团队）"""
         wolf_teammates = wolf_teammates or []
         candidates = [p for p in alive_players
                       if p != memory.agent_id and p not in wolf_teammates]
         if not candidates:
             return None
         suspicion = memory.get_suspicion_levels()
-        # 狼人想投掉对自己有威胁的人（怀疑自己的人）
-        # suspicion为负表示该玩家怀疑我方
-        threatened_by = [p for p in candidates if suspicion.get(p, 0) < -0.2]
-        if threatened_by:
-            return random.choice(threatened_by)
+        # 分散策略：在好人中加权随机选择，而非都投最可疑的
+        # 这样可以避免所有狼人票集中在同一个人身上
+        weights = []
+        for p in candidates:
+            s = suspicion.get(p, 0)
+            # 对有威胁的玩家（怀疑狼人的好人）给予略高权重
+            # 但加入随机性避免全部狼人投同一目标
+            w = max(0.1, s + 1.1) * random.uniform(0.7, 1.3)
+            weights.append(w)
+        total = sum(weights)
+        if total <= 0:
+            return random.choice(candidates)
+        r = random.random() * total
+        cumulative = 0
+        for i, p in enumerate(candidates):
+            cumulative += weights[i]
+            if r <= cumulative:
+                return p
         return random.choice(candidates)
 
     def suggest_night_action(self, memory, alive_players: list,
