@@ -273,6 +273,9 @@ class GameEngine:
                 if choice == 'y':
                     saved = True
                     self.witch_has_save = False
+                    print(f"\n   ✓ 女巫使用解药，救活了 {self.werewolf_kill_target} 号玩家")
+            elif self.werewolf_kill_target is not None and not self.witch_has_save:
+                print(f"\n   ⚠️ 解药已使用，无法救人")
 
             if not saved and self.witch_has_poison:
                 poison_target = human_actions.get("witch_poison")
@@ -419,7 +422,9 @@ class GameEngine:
         每个阶段人类玩家未提供操作时暂停 yield awaiting_xxx 事件。
         """
         day = self.phase_controller.day
-        self.werewolf_kill_target = None
+        # resume 时不重置已由前面阶段设置的值
+        if not resume_phase:
+            self.werewolf_kill_target = None
         self.seer_check_result = None
         game_state = self.get_game_state()
         human_actions = human_actions or {}
@@ -1036,6 +1041,7 @@ class GameEngine:
 
                 if not votes:
                     print(f"\n🫱 本轮无人投票，直接跳过投票阶段")
+                    yield {"type": "system", "content": "本轮无人投票，直接跳过投票阶段"}
                     self._distribute_info_to_memories(
                         "system", "本轮无人投票，跳过投票阶段",
                         visibility="public", day=self.phase_controller.day,
@@ -1159,6 +1165,7 @@ class GameEngine:
         # 全员弃权
         if not votes:
             print(f"\n🫱 本轮无人投票，直接跳过投票阶段")
+            yield {"type": "system", "content": "本轮无人投票，直接跳过投票阶段"}
             self._distribute_info_to_memories(
                 "system", "本轮无人投票，跳过投票阶段",
                 visibility="public", day=self.phase_controller.day,
@@ -1175,6 +1182,7 @@ class GameEngine:
                 threshold = len(self.alive_players) // 3
                 if voters_count < threshold:
                     print(f"   ⊘ 仅{voters_count}人投票（需≥{threshold}人），不触发淘汰")
+                    yield {"type": "system", "content": f"仅{voters_count}人投票（需≥{threshold}人），不触发淘汰"}
                     break
 
                 if len(candidates) == 1:
@@ -1375,7 +1383,13 @@ class GameEngine:
                 if human_speeches:
                     content = human_speeches.get(pid)
                 if not content:
-                    content = "我觉得自己很清白，请相信我。"
+                    # CLI 模式：提示人类输入；Web 模式：human_speeches 为空时也走这里
+                    try:
+                        content = input("   请输入PK发言: ").strip()
+                    except (EOFError, OSError):
+                        pass
+                    if not content:
+                        content = "我觉得自己很清白，请相信我。"
             else:
                 wolf_teammates = []
                 if role == "狼人":

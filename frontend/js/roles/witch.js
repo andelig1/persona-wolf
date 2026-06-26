@@ -57,10 +57,11 @@
             (witchAction === 'none' ? '✓ 不操作' : '不操作') + '</button>' +
             '</div>';
 
-        if (witchPoisonTarget !== null) {
+        if (witchAction === 'poison') {
             html += '<select class="action-input" id="witch-poison" onchange="updateWitchPoison(this)">' +
                 '<option value="">选择毒杀目标</option>';
             alivePlayers.forEach(function(p) {
+                if (p === wolfTarget) return; // 不能毒杀狼人刀口目标
                 var selected = witchPoisonTarget === p ? ' selected' : '';
                 html += '<option value="' + p + '"' + selected + '>' + gameState.player_names[p] + ' (' + p + '号)</option>';
             });
