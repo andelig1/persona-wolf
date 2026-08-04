@@ -31,6 +31,10 @@
 | **首轮发言随机化** | 不再固定从 1 号开始发言，人类玩家不会被集火 |
 | **人类发言保护** | 嫌疑度分析识别 `[真人]` 标签，人类发言调整幅度减半 |
 | **前端 UI 重设计** | 暗夜森林主题，玻璃态卡片、辉光边框、多层星空、投票面板 |
+| **纯观战模式** | Web 可旁观全 AI 对局（所有身份可见、自动推进）；CLI 批量后台跑 1~10 局，只写日志不出内容 |
+| **设置抽屉** | 右上角齿轮按钮，主界面变暗 + 右侧滑入抽屉，内置待扩展设置项与「查看胜率」 |
+| **人格胜率统计** | JSONL 追加记录每局结果，按人格（好人/狼人侧 W/G）与玩家聚合，弹窗展示 |
+| **随机决策基准** | `RandomAgent` 纯机器均匀随机决策（零 LLM 成本），与 ReAct 智能体胜率对照 |
 
 ---
 
@@ -47,6 +51,7 @@ persona-wolf/
 ├── agents/                     # AI 玩家模块
 │   ├── base_agent.py           # Agent 基类
 │   ├── react_agent.py          # ReActWerewolfAgent（核心，全部决策用 ReAct + Self-Reflection）
+│   ├── random_agent.py         # RandomAgent（纯机器随机决策基线）
 │   ├── human_agent.py          # 人类玩家 Agent
 │   ├── tools/                  # 工具系统（ReAct 推理中调用）
 │   │   ├── __init__.py         # create_tools_for_role() 工厂
@@ -85,14 +90,21 @@ persona-wolf/
 
 ├── frontend/                   # Web 前端（暗夜森林主题）
 │   ├── index.html              # 主页面
-│   ├── css/style.css           # 样式（玻璃态卡片、辉光边框、投票面板、观战模式）
+│   ├── css/style.css           # 样式（玻璃态卡片、辉光边框、投票面板、观战模式、设置抽屉、胜率弹窗）
 │   └── js/
-│       ├── game.js             # 游戏逻辑（SSE 流读取、事件队列、投票可视化）
+│       ├── game.js             # 游戏逻辑（SSE 流读取、事件队列、投票可视化、观战模式）
+│       ├── settings.js         # 设置抽屉 + 胜率弹窗
 │       └── roles/              # 角色前端模块
 │           ├── werewolf.js
 │           ├── seer.js
 │           ├── witch.js
 │           └── villager.js
+
+├── stats/                      # 胜率统计
+│   ├── __init__.py
+│   ├── stats_recorder.py       # StatsRecorder（JSONL 追加 + 按人格/玩家聚合）
+│   ├── win_rates.jsonl         # 每局原始记录（每行一局，追加模式）
+│   └── summary.json            # 聚合结果（可直接打开查看胜率）
 
 ├── config/                     # 配置文件
 │   ├── __init__.py
@@ -107,6 +119,7 @@ persona-wolf/
 
 ├── server.py                   # Flask Web 服务器（SSE 端点、RESTful API）
 ├── main.py                     # CLI 游戏入口
+├── batch_simulator.py          # 命令行批量观战（后台跑 1~10 局全 AI，只写日志）
 ├── compare_hallucination.py    # A/B 幻觉对比测试脚本
 ├── requirements.txt            # Python 依赖
 └── .env.example                # API Key 配置模板
@@ -403,16 +416,24 @@ pip install -r requirements.txt
 # 创建 .env 文件，填入 DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxx
 # 或直接运行 main.py，按提示输入 key 自动生成 .env
 
-# 3. 运行命令行版本
+# 3. 运行命令行版本（进入主菜单：开始游戏 / 批量观战 / 随机对照 / 查看胜率）
 python main.py
 
 # 4. 运行 Web 版本
 python server.py
 # 访问 http://localhost:8080
+# 开始界面点「观战模式」可旁观全 AI 对局；右上角齿轮 →「查看胜率」查看战绩
 
-# 5. A/B 幻觉对比测试
+# 5. 命令行批量观战（后台跑 N 局全 AI，只写日志，1~10 局）
+python batch_simulator.py --games 5 --players 8              # ReAct 智能体
+python batch_simulator.py --games 5 --players 8 --mode random  # 纯机器随机基线对照
+
+# 6. A/B 幻觉对比测试
 python compare_hallucination.py
 ```
+
+> 胜率数据：CLI 与 Web 共享 `stats/win_rates.jsonl`（每局原始记录，追加模式）与 `stats/summary.json`（聚合结果，可直接打开查看）。
+> 命令行模式也可在 `python main.py` 主菜单中进入批量/随机模式并选择跑几局，或用「查看胜率」直接打印战绩。
 
 ---
 

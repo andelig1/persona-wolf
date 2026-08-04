@@ -40,10 +40,17 @@ let dayIntroRunning = false;      // 防止 startDayIntro 被重复调用
 let pendingHumanPosition = 0;     // 人类玩家在发言顺序中的位置（用于续播）
 let tieBreakState = { active: false, round: 0, candidates: [] };
 let votedOutPlayers = {};         // 被投票出局的玩家 ID → true，其身份公开可见
+let watchMode = false;            // 纯观战模式：用户不参与，玩家1 也是 AI
 // 预言家查验结果存 window.checkedRoles，seer.js 的 handleDoneEvent 写入
 
 function isSpectator() {
-    return gameState && !gameState.alive_players.includes(1);
+    // 纯观战（玩家1 是 AI）或人类玩家已淘汰
+    return watchMode || (gameState && !gameState.alive_players.includes(1));
+}
+
+// 玩家1 是否为真人（观战模式下玩家1 也是 AI）
+function isHumanPlayer(pid) {
+    return !watchMode && pid === 1;
 }
 
 // ==================== 角色 Emoji 映射 ====================
@@ -147,7 +154,14 @@ function selectRole(role) {
 }
 
 // ==================== 游戏流程 ====================
-async function startGame() {
+function startSpectate() {
+    // 纯观战模式：以玩家1 为 AI 开局，用户只旁观
+    if (!numPlayers) numPlayers = 6;
+    watchMode = true;
+    return startGame(true);
+}
+
+async function startGame(watch) {
     // 清除观战自动推进定时器
     if (autoPlayTimer) { clearTimeout(autoPlayTimer); autoPlayTimer = null; }
     votingInProgress = false;
@@ -164,6 +178,8 @@ async function startGame() {
     votedOutPlayers = {};
     window.checkedRoles = {};
 
+    watchMode = watch === true;
+
     document.getElementById('start-screen').style.display = 'none';
     document.getElementById('game-container').style.display = 'block';
     document.getElementById('game-over-overlay').style.display = 'none';
@@ -173,21 +189,28 @@ async function startGame() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
             num_players: numPlayers,
-            human_player_id: 1,
-            human_role: chosenRole
+            human_player_id: watchMode ? 0 : 1,
+            human_role: watchMode ? null : chosenRole
         })
     });
     const data = await res.json();
     gameId = data.game_id;
 
     // JSON 序列化后 dict key 变为字符串，所以用 data.player_roles["1"]
-    currentRole = data.player_roles && data.player_roles["1"];
+    currentRole = watchMode ? '' : (data.player_roles && data.player_roles["1"]);
     gameState = data;
 
-    showRoleReveal(currentRole || '村民', function() {
+    if (watchMode) {
+        // 观战：不弹身份揭示，直接渲染并自动推进
         renderState(data);
         renderSpeeches(data.history);
-    });
+        if (data.phase !== 'ended') scheduleAutoPlay(data.phase);
+    } else {
+        showRoleReveal(currentRole || '村民', function() {
+            renderState(data);
+            renderSpeeches(data.history);
+        });
+    }
 }
 
 function showRoleReveal(role, onDismiss) {
@@ -333,7 +356,8 @@ function renderPlayers(state) {
         const name = state.player_names[pid];
         const isAlive = state.alive_players.includes(pid);
         const role = state.player_roles[pid];
-        const isHuman = pid === 1;
+        // 观战模式玩家1 也是 AI，不能标注为"你"
+        const isHuman = !watchMode && pid === 1;
         // 预言家查验结果只有预言家自己能看见
         var isSeer = currentRole === '预言家';
         var seerChecks = (isSeer && window.checkedRoles) ? window.checkedRoles : {};
@@ -419,7 +443,7 @@ function renderSpeeches(history) {
         // 发言 — 聊天气泡
         if (event.type === 'speak') {
             const speakerName = gameState?.player_names?.[event.player_id] || `玩家${event.player_id}`;
-            const isSelf = event.player_id === 1;
+            const isSelf = isHumanPlayer(event.player_id);
             const label = isSelf ? `${speakerName}（你）` : `${speakerName}`;
             html += `
                 <div class="speech-bubble ${isSelf ? 'self' : 'other'}">
@@ -456,17 +480,20 @@ function renderActionArea(state) {
     const actionTitle = document.getElementById('action-title');
     const actionContent = document.getElementById('action-content');
 
-    // —— 观战模式：人类已淘汰，禁止操作，自动推进 ——
+    // —— 观战模式：禁止操作，自动推进 ——
     if (isSpectator() && state.phase !== 'ended') {
         const phaseLabel = state.phase === 'night' ? '夜晚阶段' :
                            state.phase === 'day' ? '发言阶段' : '投票阶段';
         actionTitle.textContent = '\u{1F441}️ 观战模式';
+        const subtitle = watchMode
+            ? '你正在观看 AI 对局，所有身份对你可见'
+            : '你已被淘汰，AI 玩家将自动继续游戏';
         actionContent.innerHTML = `
             <div style="text-align: center; padding: 30px;">
-                <div style="font-size: 48px; margin-bottom: 15px;">\u{1F480}</div>
-                <div style="font-size: 18px; color: #ef4444; font-weight: bold; margin-bottom: 10px;">你已被淘汰</div>
+                <div style="font-size: 48px; margin-bottom: 15px;">${watchMode ? '\u{1F441}' : '\u{1F480}'}</div>
+                <div style="font-size: 18px; color: ${watchMode ? '#c084fc' : '#ef4444'}; font-weight: bold; margin-bottom: 10px;">${watchMode ? 'AI 对局进行中' : '你已被淘汰'}</div>
                 <div style="color: #9ca3af; font-size: 14px; margin-bottom: 5px;">当前：${phaseLabel}</div>
-                <div style="color: #6b7280; font-size: 13px;">AI 玩家将自动继续游戏，你可以观战</div>
+                <div style="color: #6b7280; font-size: 13px;">${subtitle}</div>
                 <div class="loading-spinner" style="margin-top: 20px;"></div>
             </div>
         `;
@@ -507,7 +534,7 @@ function renderActionArea(state) {
         actionContent.innerHTML = `
             <div style="text-align: center;">
                 <div style="font-size: 24px; color: #fbbf24; margin-bottom: 20px;">${state.winner}获胜!</div>
-                <button class="action-btn" onclick="startGame()">再来一局</button>
+                <button class="action-btn" onclick="restartGame()">${watchMode ? '再来一局(观战)' : '再来一局'}</button>
             </div>
         `;
         showGameOver(state);
@@ -540,7 +567,7 @@ function appendSystemMessage(content) {
 
 function appendSpeechBubble(speech) {
     const container = document.getElementById('speech-content');
-    const isSelf = speech.player_id === 1;
+    const isSelf = isHumanPlayer(speech.player_id);
     const speakerName = speech.name || `玩家${speech.player_id}`;
     const label = isSelf ? `${speakerName}（你）` : `${speakerName}`;
     const content = (speech.content || '').replace(/\n/g, '<br>');
@@ -567,7 +594,7 @@ function appendVoteSummaryPanel(data) {
     var voterHTML = '';
     for (var i = 0; i < voters.length; i++) {
         var v = voters[i];
-        var isSelf = v.id === 1;
+        var isSelf = isHumanPlayer(v.id);
         var cls = 'vote-chip';
         if (isSelf) cls += ' self';
         if (v.is_abstain) cls += ' abstain';
@@ -1366,10 +1393,58 @@ async function executeVoteAction(isAbstain = false, extra_speeches = null) {
     }
 }
 
+// ==================== 返回首页 ====================
+function returnToHome() {
+    // 停止观战自动推进与所有进行中的流程
+    if (autoPlayTimer) { clearTimeout(autoPlayTimer); autoPlayTimer = null; }
+    votingInProgress = false;
+    nightFlowRunning = false;
+    nightFlowReady = false;
+    nightResumePhase = null;
+    dayIntroRunning = false;
+    pendingHumanPosition = 0;
+    messageQueue = [];
+    messageQueueTimer = null;
+    messageQueueCallback = null;
+    isDisplayingMessages = false;
+    tieBreakState = { active: false, round: 0, candidates: [] };
+    votedOutPlayers = {};
+    window.checkedRoles = {};
+    watchMode = false;
+    gameId = null;
+    gameState = null;
+    currentRole = '';
+
+    // 重置开始界面到初始状态
+    chosenRole = null;
+    roleConfig = null;
+    numPlayers = 6;
+    const startBtn = document.getElementById('start-btn');
+    if (startBtn) startBtn.disabled = true;
+    const roleSel = document.getElementById('role-selection');
+    if (roleSel) roleSel.style.display = 'none';
+    const roleDisp = document.getElementById('role-config-display');
+    if (roleDisp) roleDisp.innerHTML = '';
+    document.querySelectorAll('.player-btn').forEach(b => {
+        b.style.border = ''; b.style.background = '';
+    });
+
+    document.getElementById('game-container').style.display = 'none';
+    document.getElementById('game-over-overlay').style.display = 'none';
+    const startScreen = document.getElementById('start-screen');
+    if (startScreen) startScreen.style.display = '';
+}
+
 // ==================== 游戏结束 ====================
+function restartGame() {
+    if (watchMode) startSpectate();
+    else startGame();
+}
+
 function showGameOver(state) {
     document.getElementById('game-over-winner').textContent = `胜利者: ${state.winner}`;
-    document.getElementById('game-over-role').textContent = `你的身份: ${currentRole}`;
+    document.getElementById('game-over-role').textContent =
+        watchMode ? '👁 观战模式 · 旁观全程' : `你的身份: ${currentRole}`;
 
     let rolesList = '<div style="margin-top: 20px; text-align: left;">';
     for (const [pid, name] of Object.entries(state.player_names)) {

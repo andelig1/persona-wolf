@@ -43,6 +43,7 @@ from api.game_api import (
     get_role_config,
     set_werewolf_target,
     execute_wolf_action,
+    get_stats,
 )
 from api.exceptions import GameNotFoundError, InvalidPhaseError, InvalidPlayerError, GameAlreadyOverError
 import os
@@ -338,6 +339,12 @@ def api_check_win(game_id):
         return jsonify({'winner': winner})
     except GameNotFoundError as e:
         return jsonify({'error': str(e)}), 404
+
+
+@app.route('/api/stats', methods=['GET'])
+def api_stats():
+    """胜率统计（人格 + 玩家）"""
+    return jsonify(get_stats())
 
 
 if __name__ == '__main__':

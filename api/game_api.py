@@ -7,6 +7,7 @@ import uuid
 from typing import Optional, List, Dict
 
 from core.game_engine import GameEngine
+from agents.human_agent import HumanAgent
 from .models import (
     GameState, Event, EventType, Phase,
     NightResult, DayResult, VoteResult,
@@ -15,10 +16,14 @@ from .exceptions import (
     GameNotFoundError, InvalidPhaseError,
     InvalidPlayerError, GameAlreadyOverError,
 )
+from stats import get_stats_recorder
 
 
 # 全局游戏存储: game_id -> (GameEngine, GameState, synced_event_count)
 _games: Dict[str, tuple] = {}
+
+# 已写入胜率统计的引擎（按 id() 去重，防止同一局被多次记录）
+_recorded_games: set = set()
 
 
 def get_role_config(num_players: int) -> list:
@@ -350,6 +355,7 @@ def night_step_stream(game_id: str,
         yield evt
 
     _sync_state(state, engine, game_id)
+    record_game_if_finished(engine)
 
 
 def day_step(game_id: str, user_speak: str) -> DayResult:
@@ -577,6 +583,7 @@ def vote_step_stream(game_id: str, user_vote: int, extra_speeches: list = None):
         if event.get("type") == "done":
             # 投票完成，同步状态
             _sync_state(state, engine, game_id)
+            record_game_if_finished(engine)
 
             # 构建历史事件
             events = []
@@ -681,6 +688,41 @@ def _get_engine_and_state(game_id: str) -> tuple:
         raise GameNotFoundError(f"游戏 {game_id} 不存在")
     engine, state, _ = _games[game_id]
     return (engine, state)
+
+
+def record_game_if_finished(engine: GameEngine) -> None:
+    """游戏结束时把本局结果写入胜率统计（幂等，避免重复记录）
+
+    夜晚/投票都可能触发胜负判定，因此按引擎实例 id 去重。
+    """
+    winner = engine.winner
+    if not winner:
+        return
+    key = id(engine)
+    if key in _recorded_games:
+        return
+    _recorded_games.add(key)
+
+    personalities = {
+        pid: getattr(agent, "personality", "rational")
+        for pid, agent in engine.agents.items()
+    }
+    mode = "random" if getattr(engine, "agent_mode", "react") == "random" else "react"
+    # 玩家胜率只统计真人玩家的局（全 AI 批量局 human_player_id 无 HumanAgent → None）
+    has_human = any(isinstance(a, HumanAgent) for a in engine.agents.values())
+    human_pid = engine.human_player_id if has_human else None
+    get_stats_recorder().record_game(
+        winner=winner,
+        roles=engine.role_manager.player_roles,
+        personalities=personalities,
+        mode=mode,
+        human_player_id=human_pid,
+    )
+
+
+def get_stats() -> dict:
+    """获取聚合后的胜率统计"""
+    return get_stats_recorder().get_summary()
 
 
 def _engine_to_state(game_id: str, engine: GameEngine) -> GameState:

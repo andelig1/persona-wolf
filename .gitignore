@@ -48,6 +48,12 @@ keys/
 *.log
 logs/
 
+# 运行时战绩数据（代码在 stats/，数据不入库）
+stats/win_rates.json
+stats/win_rates.jsonl
+stats/summary.json
+stats/win_rates.json.bak
+
 # OS
 .DS_Store
 Thumbs.db

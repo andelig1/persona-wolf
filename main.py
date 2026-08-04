@@ -1,11 +1,20 @@
 """游戏入口 - 命令行版本
 
 多智能体狼人杀游戏，每个AI玩家使用 ReAct 推理 + 记忆 + 工具
+
+提供四种模式：
+  1. 开始游戏        —— 交互式游玩一局
+  2. 批量观战(ReAct)  —— 后台跑 1~10 局全 AI，只写日志
+  3. 随机决策对照     —— 后台跑 1~10 局纯机器随机基线
+  4. 查看胜率        —— 打印人格/真人玩家的战绩
+
 运行方式: python main.py
 """
 import random
 from core.game_engine import GameEngine
 from utils.env_generator import generate_env_file, check_env_exists
+from batch_simulator import run_batch
+from stats import get_stats_recorder
 
 
 def setup_api_key():
@@ -133,11 +142,8 @@ def print_roles(eng: GameEngine):
     input("\n按回车开始游戏...")
 
 
-def main():
-    # 检查/设置 API Key
-    has_api_key = setup_api_key()
-
-    # 选择玩家数量
+def play_interactive():
+    """交互式游玩一局"""
     num_players = choose_num_players()
     human_player_id = 1  # 始终是玩家1（从1开始计数）
 
@@ -185,6 +191,103 @@ def main():
 
     except KeyboardInterrupt:
         print("\n\n游戏被用户中断")
+
+    # 记录本局到胜率统计（真人玩家）
+    from api.game_api import record_game_if_finished
+    try:
+        record_game_if_finished(eng)
+    except Exception:
+        pass
+
+
+def choose_batch_params() -> tuple:
+    """让用户选择批量轮数与人数"""
+    while True:
+        try:
+            games = int(input("要跑几局（1~10）: ").strip())
+            if 1 <= games <= 10:
+                break
+            print("无效选择，局数必须在 1~10 之间")
+        except ValueError:
+            print("请输入数字")
+    players = choose_num_players()
+    return games, players
+
+
+def print_stats_summary():
+    """打印胜率汇总"""
+    summary = get_stats_recorder().get_summary()
+    print("\n" + "=" * 52)
+    print(f"📊 胜率统计 | 共 {summary['total_games']} 局")
+    print("=" * 52)
+
+    overall = summary['overall']
+    print(f"整体胜率: {overall['win_rate']}%  "
+          f"(玩家槽位 {overall['wins']}/{overall['games']})")
+
+    persos = summary['personalities']
+    if persos:
+        print("\n人格胜率:")
+        print(f"  {'人格':<10}{'局数':>5}{'胜率':>9}  好人W/G  狼人W/G")
+        for p in persos:
+            print(f"  {p['name']:<10}{p['games']:>5}{p['win_rate']:>8.1f}%  "
+                  f"{p['good']['wins']}/{p['good']['games']:<3}  "
+                  f"{p['bad']['wins']}/{p['bad']['games']}")
+
+    player = summary['player']
+    if player:
+        print("\n我的胜率（真人玩家）:")
+        print(f"  {player['name']}: 总胜率 {player['win_rate']}%  "
+              f"好人 {player['good']['wins']}/{player['good']['games']}  "
+              f"狼人 {player['bad']['wins']}/{player['bad']['games']}")
+    else:
+        print("\n我的胜率: 暂无记录（玩过带人类的局后才会统计）")
+
+    print("\n提示: stats/win_rates.jsonl 为每局原始记录，stats/summary.json 为聚合结果，均可直接打开查看")
+
+
+def show_menu():
+    """打印主菜单"""
+    print("\n" + "=" * 52)
+    print("  🐺 多智能体狼人杀 — 主菜单")
+    print("=" * 52)
+    print("  1. 🎮 开始一局游戏（交互模式）")
+    print("  2. 👁 批量观战（ReAct 智能体，后台跑多局）")
+    print("  3. 🎲 随机决策对照（纯机器随机基线）")
+    print("  4. 📊 查看胜率")
+    print("  0. 🚪 退出")
+    print("-" * 52)
+
+
+def main():
+    # 检查/设置 API Key
+    setup_api_key()
+
+    while True:
+        show_menu()
+        choice = input("请选择模式: ").strip()
+
+        if choice == "1":
+            play_interactive()
+        elif choice == "2":
+            games, players = choose_batch_params()
+            try:
+                run_batch(games, players, mode="react")
+            except KeyboardInterrupt:
+                print("\n批量观战已中断")
+        elif choice == "3":
+            games, players = choose_batch_params()
+            try:
+                run_batch(games, players, mode="random")
+            except KeyboardInterrupt:
+                print("\n批量观战已中断")
+        elif choice == "4":
+            print_stats_summary()
+        elif choice in ("0", "q", "exit", "退出"):
+            print("再见！")
+            break
+        else:
+            print("无效选择，请输入 1~4 或 0")
 
 
 if __name__ == "__main__":

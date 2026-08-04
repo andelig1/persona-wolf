@@ -47,7 +47,8 @@ class RoleManager:
 
         # 设置玩家名称（从1开始编号）
         self.player_names = {i + 1: f"玩家{i + 1}" for i in range(num_players)}
-        self.player_names[human_player_id] = "你"
+        if 1 <= human_player_id <= num_players:
+            self.player_names[human_player_id] = "你"
 
         # 构建角色->玩家映射
         self._build_role_agents()
@@ -109,7 +110,8 @@ class RoleManager:
 
         # 设置玩家名称（从1开始编号）
         self.player_names = {i + 1: f"玩家{i + 1}" for i in range(num_players)}
-        self.player_names[human_player_id] = "你"
+        if 1 <= human_player_id <= num_players:
+            self.player_names[human_player_id] = "你"
 
         # 构建角色->玩家映射
         self._build_role_agents()

@@ -15,6 +15,7 @@ from .phase_controller import Phase, PhaseController
 from .role_manager import RoleManager
 from .rule_checker import RuleChecker
 from agents.react_agent import ReActWerewolfAgent
+from agents.random_agent import RandomAgent
 from agents.human_agent import HumanAgent
 from agents.base_agent import BaseAgent
 from memory.event_recorder import EventRecorder
@@ -24,9 +25,12 @@ from utils.logger import reset_logger
 class GameEngine:
     """游戏引擎 - 裁判模式"""
 
-    def __init__(self, num_players: int = 4, human_player_id: int = 1):
+    def __init__(self, num_players: int = 4, human_player_id: int = 1,
+                 agent_mode: str = "react"):
         self.num_players = num_players
         self.human_player_id = human_player_id
+        # "react"=ReAct智能体, "random"=纯机器随机基线
+        self.agent_mode = agent_mode
 
         # 核心组件
         self.role_manager = RoleManager()
@@ -105,7 +109,10 @@ class GameEngine:
             else:
                 personality = all_personalities[personality_idx % len(all_personalities)]
                 personality_idx += 1
-                self.agents[pid] = ReActWerewolfAgent(pid, role, personality, name)
+                if self.agent_mode == "random":
+                    self.agents[pid] = RandomAgent(pid, role, personality, name)
+                else:
+                    self.agents[pid] = ReActWerewolfAgent(pid, role, personality, name)
 
     def get_game_state(self) -> Dict:
         """获取当前游戏状态"""
